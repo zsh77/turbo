@@ -2,8 +2,11 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use console::StyledObject;
 use tracing::{debug, log::warn};
-use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPathBuf};
+use turbopath::{
+    AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf,
+};
 use turborepo_cache::{AsyncCache, CacheError, CacheResponse, CacheSource};
+use turborepo_scm::SCM;
 use turborepo_ui::{
     color, replay_logs, ColorSelector, LogWriter, PrefixedUI, PrefixedWriter, GREY, UI,
 };
@@ -11,6 +14,7 @@ use turborepo_ui::{
 use crate::{
     cli::OutputLogsMode,
     daemon::{DaemonClient, DaemonConnector},
+    hash::{FileHashes, TurboHash},
     opts::RunCacheOpts,
     package_graph::WorkspaceInfo,
     run::task_id::TaskId,
@@ -29,6 +33,10 @@ pub enum Error {
     Daemon(#[from] crate::daemon::DaemonError),
     #[error("no connection to daemon")]
     NoDaemon,
+    #[error(transparent)]
+    Scm(#[from] turborepo_scm::Error),
+    #[error(transparent)]
+    Path(#[from] turbopath::PathError),
 }
 
 impl Error {
@@ -39,7 +47,7 @@ impl Error {
 
 pub struct RunCache {
     task_output_mode: Option<OutputLogsMode>,
-    cache: AsyncCache,
+    cache: Arc<AsyncCache>,
     reads_disabled: bool,
     writes_disabled: bool,
     repo_root: AbsoluteSystemPathBuf,
@@ -50,7 +58,7 @@ pub struct RunCache {
 
 impl RunCache {
     pub fn new(
-        cache: AsyncCache,
+        cache: Arc<AsyncCache>,
         repo_root: &AbsoluteSystemPath,
         opts: &RunCacheOpts,
         color_selector: ColorSelector,
@@ -350,5 +358,84 @@ impl TaskCache {
 
     pub fn expanded_outputs(&self) -> &[AnchoredSystemPathBuf] {
         &self.expanded_outputs
+    }
+}
+
+#[derive(Clone)]
+pub struct ConfigCache {
+    hash: String,
+    repo_root: AbsoluteSystemPathBuf,
+    config_file: AbsoluteSystemPathBuf,
+    anchored_path: AnchoredSystemPathBuf,
+    cache: Arc<AsyncCache>,
+}
+
+impl ConfigCache {
+    pub fn new(
+        hash: String,
+        repo_root: AbsoluteSystemPathBuf,
+        config_path: &[&str],
+        cache: Arc<AsyncCache>,
+    ) -> Self {
+        let config_file = repo_root.join_components(config_path);
+        ConfigCache {
+            hash,
+            repo_root: repo_root.clone(),
+            config_file: config_file.clone(),
+            anchored_path: AnchoredSystemPathBuf::relative_path_between(&repo_root, &config_file),
+            cache,
+        }
+    }
+
+    pub fn exists(&self) -> bool {
+        return self.config_file.try_exists().unwrap_or(false);
+    }
+
+    pub async fn restore(&self) -> Result<(CacheResponse, Vec<AnchoredSystemPathBuf>), CacheError> {
+        return self.cache.fetch(&self.repo_root, &self.hash).await;
+    }
+
+    pub async fn save(&self) -> Result<(), CacheError> {
+        match self.exists() {
+            true => {
+                debug!("config file exists, caching");
+                return self
+                    .cache
+                    .put(
+                        self.repo_root.clone(),
+                        self.hash.clone(),
+                        vec![self.anchored_path.clone()],
+                        0,
+                    )
+                    .await;
+            }
+            false => {
+                debug!("config file does not exist, skipping cache save");
+                return Ok(());
+            }
+        }
+    }
+
+    // The config hash is used for zero config turbo and is generated using all
+    // files in the repository
+    pub fn calculate_config_hash(
+        scm: &SCM,
+        repo_root: &AbsoluteSystemPathBuf,
+    ) -> Result<String, CacheError> {
+        // create a repo_root from AnchoredSystemPath
+        let anchored_root = match AnchoredSystemPath::new("") {
+            Ok(anchored_root) => anchored_root,
+            Err(err) => return Err(CacheError::CacheMiss),
+        };
+
+        let inputs: Vec<String> = vec![];
+
+        let hash_object = match scm.get_package_file_hashes(&repo_root, &anchored_root, &inputs) {
+            Ok(hash_object) => hash_object,
+            Err(_) => return Err(CacheError::CacheMiss),
+        };
+
+        // return the hash
+        Ok(FileHashes(hash_object).hash())
     }
 }

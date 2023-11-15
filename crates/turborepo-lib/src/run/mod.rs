@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context as ErrorContext, Result};
-pub use cache::{RunCache, TaskCache};
+pub use cache::{ConfigCache, RunCache, TaskCache};
 use chrono::Local;
 use itertools::Itertools;
 use rayon::iter::ParallelBridge;
@@ -110,6 +110,7 @@ impl<'a> Run<'a> {
         let api_auth = self.base.api_auth()?;
         let api_client = self.base.api_client()?;
         let config = self.base.config()?;
+        let scm = SCM::new(&self.base.repo_root);
 
         // Pulled from initAnalyticsClient in run.go
         let is_linked = api_auth.is_some();
@@ -125,12 +126,51 @@ impl<'a> Run<'a> {
 
         let is_single_package = opts.run_opts.single_package;
 
+        // is this eligible for zero config turbo
+        // TODO: write this code
+        let supports_zero_config = true;
+        debug!(
+            "ZERO CONFIG: supports zero config: {}",
+            supports_zero_config
+        );
+
         let pkg_dep_graph = PackageGraph::builder(&self.base.repo_root, root_package_json.clone())
             .with_single_package_mode(opts.run_opts.single_package)
             .build()?;
 
-        let root_turbo_json =
-            TurboJson::load(&self.base.repo_root, &root_package_json, is_single_package)?;
+        let async_cache = Arc::new(AsyncCache::new(
+            &opts.cache_opts,
+            &self.base.repo_root,
+            api_client.clone(),
+            api_auth.clone(),
+        )?);
+
+        let config_hash = ConfigCache::calculate_config_hash(&scm, &self.base.repo_root)?;
+        debug!("ZERO CONFIG: hash for config: {}", config_hash);
+
+        let config_cache = ConfigCache::new(
+            config_hash.to_string(),
+            self.base.repo_root.clone(),
+            &[".turbo", "traced-config.json"],
+            async_cache.clone(),
+        );
+
+        if supports_zero_config {
+            // if we're in zero config mode, we want to try and restore a config
+            let result = config_cache.restore().await;
+            // debug log if the config was restored using a match
+            match result {
+                Ok(_) => debug!("ZERO CONFIG: config restored for {}", config_hash),
+                Err(_) => debug!("ZERO CONFIG: no config found for {}", config_hash),
+            }
+        };
+
+        let root_turbo_json = TurboJson::load(
+            &self.base.repo_root,
+            &root_package_json,
+            is_single_package,
+            supports_zero_config,
+        )?;
 
         let team_id = root_turbo_json
             .remote_cache
@@ -173,8 +213,6 @@ impl<'a> Run<'a> {
             .validate()
             .context("Invalid package dependency graph")?;
 
-        let scm = SCM::new(&self.base.repo_root);
-
         let filtered_pkgs = {
             let mut filtered_pkgs = scope::resolve_packages(
                 &opts.scope_opts,
@@ -202,13 +240,6 @@ impl<'a> Run<'a> {
         };
 
         let env_at_execution_start = EnvironmentVariableMap::infer();
-
-        let async_cache = AsyncCache::new(
-            &opts.cache_opts,
-            &self.base.repo_root,
-            api_client.clone(),
-            api_auth.clone(),
-        )?;
 
         info!("created cache");
 
@@ -354,6 +385,7 @@ impl<'a> Run<'a> {
             pkg_dep_graph.clone(),
             runcache,
             run_tracker,
+            config_cache,
             &opts,
             package_inputs_hashes,
             &env_at_execution_start,
@@ -411,15 +443,41 @@ impl<'a> Run<'a> {
             PackageJson::load(&package_json_path).context("failed to read package.json")?;
 
         let opts = self.opts()?;
+        let scm = SCM::new(&self.base.repo_root);
+        let api_client = self.base.api_client()?;
+        let api_auth = self.base.api_auth()?;
+        let async_cache = Arc::new(AsyncCache::new(
+            &opts.cache_opts,
+            &self.base.repo_root,
+            api_client.clone(),
+            api_auth.clone(),
+        )?);
 
         let is_single_package = opts.run_opts.single_package;
+
+        // is this eligible for zero config turbo
+        // TODO: write this code
+        let supports_zero_config = true;
+
+        let config_hash = ConfigCache::calculate_config_hash(&scm, &self.base.repo_root)?;
+
+        let config_cache = ConfigCache::new(
+            config_hash.to_string(),
+            self.base.repo_root.clone(),
+            &[".turbo", "traced-config.json"],
+            async_cache.clone(),
+        );
 
         let pkg_dep_graph = PackageGraph::builder(&self.base.repo_root, root_package_json.clone())
             .with_single_package_mode(opts.run_opts.single_package)
             .build()?;
 
-        let root_turbo_json =
-            TurboJson::load(&self.base.repo_root, &root_package_json, is_single_package)?;
+        let root_turbo_json = TurboJson::load(
+            &self.base.repo_root,
+            &root_package_json,
+            is_single_package,
+            supports_zero_config,
+        )?;
 
         let root_workspace = pkg_dep_graph
             .workspace_info(&WorkspaceName::Root)
@@ -442,8 +500,6 @@ impl<'a> Run<'a> {
             opts.run_opts.framework_inference,
             root_turbo_json.global_dot_env.as_deref(),
         )?;
-
-        let scm = SCM::new(&self.base.repo_root);
 
         let filtered_pkgs = {
             let mut filtered_pkgs = scope::resolve_packages(
@@ -468,7 +524,6 @@ impl<'a> Run<'a> {
         };
 
         let global_hash = global_hash_inputs.calculate_global_hash_from_inputs();
-        let api_auth = self.base.api_auth()?;
 
         let engine = EngineBuilder::new(
             &self.base.repo_root,
@@ -508,14 +563,6 @@ impl<'a> Run<'a> {
 
         let pkg_dep_graph = Arc::new(pkg_dep_graph);
         let engine = Arc::new(engine);
-        let api_client = self.base.api_client()?;
-
-        let async_cache = AsyncCache::new(
-            &opts.cache_opts,
-            &self.base.repo_root,
-            api_client.clone(),
-            api_auth.clone(),
-        )?;
 
         let color_selector = ColorSelector::default();
 
@@ -545,6 +592,7 @@ impl<'a> Run<'a> {
             pkg_dep_graph.clone(),
             runcache,
             run_tracker,
+            config_cache,
             &opts,
             package_inputs_hashes,
             &env_at_execution_start,

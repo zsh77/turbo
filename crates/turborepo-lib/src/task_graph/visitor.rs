@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    fs::File,
     io::Write,
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
@@ -13,13 +14,14 @@ use regex::Regex;
 use serde::Deserialize;
 use tokio::{process::Command, sync::mpsc};
 use tracing::{debug, error, warn, Span};
-use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, PathRelation};
+use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, PathRelation};
 use turborepo_env::{EnvMatcher, EnvironmentVariableMap, ResolvedEnvMode};
 use turborepo_ui::{ColorSelector, OutputClient, OutputSink, OutputWriter, PrefixedUI, UI};
 
-use super::TaskDefinition;
+use super::{TaskDefinition, TraceAddr, TracePaths, ZeroConfigTraceAccess, ZeroConfigTraceFile};
 use crate::{
     cli::EnvMode,
+    config::{RawTurboJSON, TurboJson},
     engine::{Engine, ExecutionOptions, StopExecution},
     opts::Opts,
     package_graph::{PackageGraph, WorkspaceName},
@@ -28,9 +30,10 @@ use crate::{
         global_hash::GlobalHashableInputs,
         summary,
         summary::{GlobalHashSummary, RunTracker},
-        task_id::{self, TaskId},
-        RunCache,
+        task_id::{self, TaskId, TaskName},
+        ConfigCache, RunCache,
     },
+    task_graph::{BookkeepingTaskDefinition, Pipeline},
     task_hash::{self, PackageInputsHashes, TaskHashTrackerState, TaskHasher},
 };
 
@@ -46,6 +49,7 @@ pub struct Visitor<'a> {
     repo_root: &'a AbsoluteSystemPath,
     run_cache: Arc<RunCache>,
     run_tracker: RunTracker,
+    config_cache: ConfigCache,
     sink: OutputSink<StdWriter>,
     task_hasher: TaskHasher<'a>,
     ui: UI,
@@ -81,6 +85,7 @@ impl<'a> Visitor<'a> {
         package_graph: Arc<PackageGraph>,
         run_cache: Arc<RunCache>,
         run_tracker: RunTracker,
+        config_cache: ConfigCache,
         opts: &'a Opts,
         package_inputs_hashes: PackageInputsHashes,
         env_at_execution_start: &'a EnvironmentVariableMap,
@@ -111,6 +116,7 @@ impl<'a> Visitor<'a> {
             repo_root,
             run_cache,
             run_tracker,
+            config_cache,
             sink,
             task_hasher,
             ui,
@@ -127,7 +133,8 @@ impl<'a> Visitor<'a> {
             tokio::spawn(engine.execute(ExecutionOptions::new(false, concurrency), node_sender))
         };
         let mut tasks = FuturesUnordered::new();
-        let errors = Arc::new(Mutex::new(Vec::new()));
+        let errors: Arc<Mutex<Vec<TaskError>>> = Arc::new(Mutex::new(Vec::new()));
+        let traced_pipeline = Arc::new(Mutex::new(HashMap::<String, ZeroConfigTraceFile>::new()));
 
         let span = Span::current();
 
@@ -228,6 +235,7 @@ impl<'a> Visitor<'a> {
             let package_manager = self.package_graph.package_manager().clone();
             let workspace_directory = self.repo_root.resolve(workspace_info.package_path());
             let errors = errors.clone();
+            let traced_pipeline = traced_pipeline.clone();
             let task_id_for_display = self.display_task_id(&info);
             let hash_tracker = self.task_hasher.task_hash_tracker();
             let tracker = self.run_tracker.track_task(info.clone().into_owned());
@@ -276,7 +284,7 @@ impl<'a> Visitor<'a> {
                 // Always last to make sure it overwrites any user configured env var.
                 cmd.env("TURBO_HASH", &task_hash);
                 let trace_file =
-                    workspace_directory.join_components(&[".turbo", &task_hash, "next-trace.json"]);
+                    workspace_directory.join_components(&[".turbo", &task_hash, "trace.json"]);
                 trace_file.ensure_dir().unwrap();
                 cmd.env("TURBO_CONFIG_TRACE_FILE", trace_file.to_string());
 
@@ -390,15 +398,36 @@ impl<'a> Visitor<'a> {
                 if let Err(e) = stdout_writer.flush() {
                     error!("{e}");
                 } else if let Err(e) = {
-                    if trace_file.exists()
-                        && can_cache(
-                            &trace_file,
-                            &repo_root,
-                            &workspace_directory,
-                            &task_definition,
-                            &execution_env,
-                        )
-                    {
+                    let mut is_cacheable = false;
+                    let trace = read_trace_file(&trace_file);
+                    match trace {
+                        Some(trace) => {
+                            is_cacheable = can_cache(
+                                &trace,
+                                &repo_root,
+                                &workspace_directory,
+                                &task_definition,
+                                &execution_env,
+                            );
+
+                            // track the traced pipeline to use for building a config later on
+                            traced_pipeline
+                                .lock()
+                                .expect("pipeline lock poisoned")
+                                .insert(task_id_for_display.clone(), trace);
+                        }
+                        None => (),
+                    };
+
+                    // if has_trace {
+                    //     let config = TurboJson::from_trace(&trace_file);
+                    //     println!("{:#?}", config);
+
+                    //     // cache the traced config
+                    //     config_cache.save().await;
+                    // }
+
+                    if is_cacheable {
                         task_cache
                             .save_outputs(&mut prefixed_ui, Duration::from_secs(1))
                             .await
@@ -429,6 +458,36 @@ impl<'a> Visitor<'a> {
         // This will poll the futures until they are all completed
         while let Some(result) = tasks.next().await {
             result.expect("task executor panicked");
+        }
+
+        // println!("pipeline: {:#?}", traced_pipeline.lock().unwrap());
+        // convert the traced_pipeline to a config (convert traced_pipeline to
+        // traced_config)
+        let traced_config = RawTurboJSON::from_trace(&*traced_pipeline.lock().unwrap());
+        if traced_config.is_some() {
+            // convert the traced_config to json and write the file to disk
+            let traced_config_json = serde_json::to_string_pretty(&traced_config);
+            match traced_config_json {
+                Ok(json) => {
+                    let file_path = self
+                        .repo_root
+                        .join_components(&[".turbo", "traced-config.json"]);
+                    let mut file = File::create(file_path);
+                    match file {
+                        Ok(mut file) => {
+                            write!(file, "{}", json);
+                            file.flush();
+                            self.config_cache.save().await;
+                        }
+                        Err(e) => {
+                            println!("error creating traced_config file: {:#?}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("error converting traced_config to json: {:#?}", e);
+                }
+            }
         }
 
         let errors = Arc::into_inner(errors)
@@ -555,86 +614,70 @@ impl<'a> Visitor<'a> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct TracePaths {
-    read: Vec<String>,
-    checked: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TraceAddr {
-    addr: String,
-    port: u16,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NextJSTrace {
-    paths: TracePaths,
-    urls: Vec<String>,
-    addrs: Vec<TraceAddr>,
-    env_vars: Vec<String>,
+// read trace if it exists return none otherwise
+fn read_trace_file(trace_file: &AbsoluteSystemPath) -> Option<ZeroConfigTraceFile> {
+    let Ok(f) = trace_file.open() else {
+        return None;
+    };
+    let trace: ZeroConfigTraceFile = match serde_json::from_reader(f) {
+        Ok(trace) => trace,
+        Err(e) => {
+            warn!("failed to parse trace file {trace_file}: {e}");
+            return None;
+        }
+    };
+    Some(trace)
 }
 
 fn can_cache(
-    trace_file: &AbsoluteSystemPath,
+    trace: &ZeroConfigTraceFile,
     repo_root: &AbsoluteSystemPath,
     workspace_dir: &AbsoluteSystemPath,
     task_definition: &TaskDefinition,
     env_map: &EnvironmentVariableMap,
 ) -> bool {
-    let Ok(f) = trace_file.open() else {
-        // TODO: better error
-        warn!("trace file {} doesn't exist", trace_file);
-        return false;
-    };
-    let trace: NextJSTrace = match serde_json::from_reader(f) {
-        Ok(trace) => trace,
-        Err(e) => {
-            warn!("failed to parse trace file {trace_file}: {e}");
-            return false;
-        }
-    };
-    if !trace.urls.is_empty() {
+    if !trace.access.urls.is_empty() {
         warn!(
             "skipping caching, trace file includes URLs: {:?}",
-            trace.urls
+            trace.access.urls
         );
         return false;
     }
-    if !trace.addrs.is_empty() {
+    if !trace.access.addrs.is_empty() {
         warn!(
             "skipping caching, trace file includes network access: {:?}",
-            trace.addrs
+            trace.access.addrs
         );
         return false;
     }
-    if let Some(path) = trace.paths.read.iter().find(|raw_path| {
+    if let Some(path) = trace.access.paths.read.iter().find(|raw_path| {
         !can_cache_file_path(raw_path, task_definition, repo_root, &workspace_dir, false)
     }) {
         warn!("read of {path} is not covered by task definition");
         return false;
     }
-    if let Some(path) = trace.paths.checked.iter().find(|raw_path| {
+    if let Some(path) = trace.access.paths.checked.iter().find(|raw_path| {
         !can_cache_file_path(raw_path, task_definition, repo_root, &workspace_dir, true)
     }) {
         warn!("check of {path} is not covered by task definition");
         return false;
     }
-    let env_matcher = EnvMatcher::from_patterns(&task_definition.env).unwrap();
-    let passthrough_matcher = task_definition
-        .pass_through_env
-        .as_ref()
-        .map(|pass_through_env| EnvMatcher::from_patterns(pass_through_env).unwrap())
-        .unwrap_or_default();
-    if let Some(env_var) = trace
-        .env_vars
-        .iter()
-        .find(|env_var| !can_cache_env_var(env_var, &[&env_matcher, &passthrough_matcher]))
-    {
-        warn!("env var {env_var} is not covered by task definition");
-        return false;
-    }
+    // let env_matcher = EnvMatcher::from_patterns(&task_definition.env).unwrap();
+    // let passthrough_matcher = task_definition
+    //     .pass_through_env
+    //     .as_ref()
+    //     .map(|pass_through_env|
+    // EnvMatcher::from_patterns(pass_through_env).unwrap())
+    //     .unwrap_or_default();
+    // if let Some(env_var) = trace
+    //     .access
+    //     .env_vars
+    //     .iter()
+    //     .find(|env_var| !can_cache_env_var(env_var, &[&env_matcher,
+    // &passthrough_matcher])) {
+    //     warn!("env var {env_var} is not covered by task definition");
+    //     return false;
+    // }
     true
 }
 
@@ -678,8 +721,10 @@ fn is_covered_by_inputs(
 }
 
 fn is_nextjs(path: &AbsoluteSystemPath) -> bool {
-    let next_root =
-        AbsoluteSystemPathBuf::new("/Users/greg/workspace/next.js/packages/next/dist/").unwrap();
+    let next_root = AbsoluteSystemPathBuf::new(
+        "/Users/knickman/Developer/vercel/development/next.js/packages/next/dist/",
+    )
+    .unwrap();
     next_root.relation_to_path(path) == PathRelation::Parent
 }
 

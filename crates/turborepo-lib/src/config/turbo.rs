@@ -5,6 +5,7 @@ use std::{
 
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 use turbopath::{AbsoluteSystemPath, RelativeUnixPathBuf};
 use turborepo_repository::package_json::PackageJson;
 
@@ -12,7 +13,9 @@ use crate::{
     cli::OutputLogsMode,
     config::{ConfigurationOptions, Error},
     run::task_id::{TaskId, TaskName, ROOT_PKG_NAME},
-    task_graph::{BookkeepingTaskDefinition, Pipeline, TaskDefinitionStable, TaskOutputs},
+    task_graph::{
+        BookkeepingTaskDefinition, Pipeline, TaskDefinitionStable, TaskOutputs, ZeroConfigTraceFile,
+    },
 };
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq, Clone)]
@@ -23,7 +26,7 @@ pub struct SpacesJson {
     pub other: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 // The processed TurboJSON ready for use by Turborepo.
 pub struct TurboJson {
     pub(crate) extends: Vec<String>,
@@ -94,6 +97,7 @@ struct RawTaskDefinition {
 }
 
 const CONFIG_FILE: &str = "turbo.json";
+const TRACED_CONFIG_FILE: &str = "traced-config.json";
 const ENV_PIPELINE_DELIMITER: &str = "$";
 const TOPOLOGICAL_PIPELINE_DELIMITER: &str = "^";
 
@@ -303,6 +307,28 @@ impl RawTurboJSON {
 
         this
     }
+
+    pub fn from_trace(trace: &HashMap<String, ZeroConfigTraceFile>) -> Option<Self> {
+        if trace.is_empty() {
+            return None;
+        }
+
+        let mut pipeline = BTreeMap::new();
+
+        for (task_name, trace_file) in trace {
+            let mut task_definition = RawTaskDefinition::default();
+            task_definition.outputs = Some(trace_file.outputs.clone());
+            task_definition.env = Some(trace_file.access.env_vars.clone());
+            let name = TaskName::from(task_name.as_str());
+            let root_task = name.into_root_task();
+            pipeline.insert(root_task, task_definition);
+        }
+
+        Some(RawTurboJSON {
+            pipeline: Some(RawPipeline(pipeline)),
+            ..RawTurboJSON::default()
+        })
+    }
 }
 
 impl TryFrom<RawTurboJSON> for TurboJson {
@@ -398,6 +424,7 @@ impl TurboJson {
         dir: &AbsoluteSystemPath,
         root_package_json: &PackageJson,
         include_synthesized_from_root_package_json: bool,
+        supports_zero_config: bool,
     ) -> Result<TurboJson, Error> {
         if root_package_json.legacy_turbo_config.is_some() {
             println!(
@@ -408,6 +435,15 @@ impl TurboJson {
         }
 
         let turbo_from_files = Self::read(&dir.join_component(CONFIG_FILE));
+        let turbo_from_traces = Self::read(&dir.join_components(&[".turbo", TRACED_CONFIG_FILE]));
+
+        // check the zero config case
+        if supports_zero_config && turbo_from_files.is_err() {
+            if let Ok(turbo_from_traces) = turbo_from_traces {
+                debug!("Using turbo.json synthesized from traces");
+                return Ok(turbo_from_traces);
+            }
+        }
 
         let mut turbo_json = match (include_synthesized_from_root_package_json, turbo_from_files) {
             // If the file didn't exist, throw a custom error here instead of propagating
@@ -470,6 +506,28 @@ impl TurboJson {
         }
 
         Ok(turbo_json)
+    }
+
+    // given a ZeroConfigTraceFile, return a new turbo.json built from the trace
+    // (outputs only for now)
+    pub fn from_trace(trace: &HashMap<String, ZeroConfigTraceFile>) -> TurboJson {
+        let mut pipeline = Pipeline::default();
+
+        // iterate through the trace
+        for (task_name, trace_file) in trace {
+            // create a new task definition
+            let mut task_definition = BookkeepingTaskDefinition::default();
+            // add the outputs to the task definition
+            task_definition.task_definition.outputs = TaskOutputs::from(trace_file.outputs.clone());
+            // add the task definition to the pipeline
+            pipeline.insert(TaskName::from(task_name.clone()), task_definition);
+        }
+
+        // return the new turbo.json
+        TurboJson {
+            pipeline,
+            ..TurboJson::default()
+        }
     }
 
     fn has_task(&self, task_name: &TaskName) -> bool {
@@ -600,7 +658,7 @@ mod tests {
         let repo_root = AbsoluteSystemPath::from_std_path(root_dir.path())?;
         fs::write(repo_root.join_component("turbo.json"), turbo_json_content)?;
 
-        let turbo_json = TurboJson::load(repo_root, &root_package_json, false)?;
+        let turbo_json = TurboJson::load(repo_root, &root_package_json, false, false)?;
         assert_eq!(turbo_json, expected_turbo_json);
 
         Ok(())
@@ -685,7 +743,7 @@ mod tests {
             fs::write(repo_root.join_component("turbo.json"), content)?;
         }
 
-        let turbo_json = TurboJson::load(repo_root, &root_package_json, true)?;
+        let turbo_json = TurboJson::load(repo_root, &root_package_json, true, false)?;
         assert_eq!(turbo_json, expected_turbo_json);
 
         Ok(())

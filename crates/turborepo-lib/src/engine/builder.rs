@@ -383,6 +383,8 @@ impl<'a> EngineBuilder<'a> {
             &workspace_dir,
             package_json,
             self.is_single,
+            // TODO: this
+            false,
         )?)
     }
 }

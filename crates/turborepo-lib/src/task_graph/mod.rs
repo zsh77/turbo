@@ -35,6 +35,34 @@ pub struct TaskOutputs {
     pub exclusions: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TracePaths {
+    read: Vec<String>,
+    checked: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceAddr {
+    addr: String,
+    port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZeroConfigTraceAccess {
+    paths: TracePaths,
+    urls: Vec<String>,
+    addrs: Vec<TraceAddr>,
+    pub env_vars: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZeroConfigTraceFile {
+    pub access: ZeroConfigTraceAccess,
+    pub outputs: Vec<String>,
+}
+
 // These are the stable fields of a TaskDefinition, versus the experimental ones
 // TODO: Consolidate this and experiments, because the split is an artifact of
 // the Go implementation

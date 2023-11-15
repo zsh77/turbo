@@ -139,6 +139,18 @@
       "program": "${workspaceRoot}/target/debug/turbo",
       "args": ["--skip-infer", "daemon"],
       "cwd": "${workspaceRoot}"
+    },
+    {
+      "name": "Zero Config",
+      "type": "lldb",
+      "request": "launch",
+      "env": {
+        "EXPERIMENTAL_RUST_CODEPATH": "true"
+      },
+      "preLaunchTask": "prepare turbo",
+      "program": "${workspaceRoot}/target/debug/turbo",
+      "args": ["--skip-infer", "--single-package", "build"],
+      "cwd": "${workspaceRoot}/../../tmp/zero-config/"
     }
   ]
 }
