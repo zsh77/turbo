@@ -20,6 +20,7 @@ pub(crate) mod login;
 pub(crate) mod logout;
 pub(crate) mod prune;
 pub(crate) mod run;
+pub(crate) mod turbocharge;
 pub(crate) mod unlink;
 
 #[derive(Debug)]

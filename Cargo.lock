@@ -11201,6 +11201,7 @@ dependencies = [
  "anyhow",
  "atty",
  "console",
+ "dialoguer",
  "indicatif",
  "lazy_static",
  "tempfile",

@@ -11,7 +11,9 @@ use turborepo_repository::inference::{RepoMode, RepoState};
 use turborepo_ui::UI;
 
 use crate::{
-    commands::{bin, daemon, generate, info, link, login, logout, prune, unlink, CommandBase},
+    commands::{
+        bin, daemon, generate, info, link, login, logout, prune, turbocharge, unlink, CommandBase,
+    },
     get_version,
     tracing::TurboSubscriber,
     Payload,
@@ -343,6 +345,9 @@ pub enum Command {
         #[serde(skip)]
         command: Option<Box<GenerateCommand>>,
     },
+    /// Turbocharge your monorepo by running a number of 'repo lints' to
+    /// identify common issues, suggest fixes, and improve performance.
+    Turbocharge {},
     #[clap(hide = true)]
     Info {
         workspace: Option<String>,
@@ -777,6 +782,13 @@ pub async fn run(
             };
 
             generate::run(tag, command, &args)?;
+            Ok(Payload::Rust(Ok(0)))
+        }
+        Command::Turbocharge {} => {
+            let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+
+            turbocharge::run(base).await;
+
             Ok(Payload::Rust(Ok(0)))
         }
         Command::Info { workspace, json } => {

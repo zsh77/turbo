@@ -4,6 +4,7 @@
 #![feature(hash_extract_if)]
 #![feature(option_get_or_insert_default)]
 #![feature(once_cell_try)]
+#![feature(lazy_cell)]
 #![deny(clippy::all)]
 // Clippy's needless mut lint is buggy: https://github.com/rust-lang/rust-clippy/issues/11299
 #![allow(clippy::needless_pass_by_ref_mut)]
@@ -14,6 +15,7 @@ mod cli;
 mod commands;
 mod config;
 mod daemon;
+mod diagnostics;
 mod engine;
 mod execution_state;
 mod framework;
