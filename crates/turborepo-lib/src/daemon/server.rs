@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::Future;
+use futures::{stream, Future, Stream};
 use semver::Version;
 use thiserror::Error;
 use tokio::{
@@ -532,6 +532,23 @@ where
                 })
             })
             .map_err(|e| tonic::Status::internal(format!("{}", e)))
+    }
+
+    async fn discover_package_hashes(
+        &self,
+        _request: tonic::Request<proto::DiscoverPackageHashesRequest>,
+    ) -> Result<tonic::Response<proto::DiscoverPackageHashesResponse>, tonic::Status> {
+        todo!()
+    }
+
+    type SubscribePackageHashesStream =
+        impl Stream<Item = Result<proto::DiscoverPackageHashesResponse, tonic::Status>>;
+
+    async fn subscribe_package_hashes(
+        &self,
+        _request: tonic::Request<proto::DiscoverPackageHashesRequest>,
+    ) -> Result<tonic::Response<Self::SubscribePackageHashesStream>, tonic::Status> {
+        Ok(tonic::Response::new(stream::empty()))
     }
 }
 
