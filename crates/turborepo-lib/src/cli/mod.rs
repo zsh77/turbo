@@ -1166,7 +1166,6 @@ pub async fn run(
             let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
 
             args.track(&event);
-            event.track_run_code_path(CodePath::Rust);
             let exit_code = run::run(base, event)
                 .await
                 .inspect(|code| {

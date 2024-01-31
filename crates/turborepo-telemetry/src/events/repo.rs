@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use turborepo_ci;
 use turborepo_vercel_api::{TelemetryEvent, TelemetryRepoEvent};
 use uuid::Uuid;
 
@@ -15,6 +16,7 @@ pub struct RepoEventBuilder {
     id: String,
     repo: String,
     parent_id: Option<String>,
+    is_ci: bool,
 }
 
 impl Identifiable for RepoEventBuilder {
@@ -34,6 +36,10 @@ impl EventBuilder for RepoEventBuilder {
             EventType::Sensitive => TelemetryConfig::one_way_hash(&event.value),
             EventType::NonSensitive => event.value.to_string(),
         };
+
+        if self.is_ci && !event.send_in_ci {
+            return;
+        }
 
         telem(TelemetryEvent::Repo(TelemetryRepoEvent {
             id: self.id.clone(),
@@ -56,6 +62,7 @@ impl RepoEventBuilder {
             id: Uuid::new_v4().to_string(),
             repo: TelemetryConfig::one_way_hash(repo_identifier),
             parent_id: None,
+            is_ci: turborepo_ci::is_ci(),
         }
     }
 
@@ -64,6 +71,7 @@ impl RepoEventBuilder {
             key: "package_manager".to_string(),
             value: name.to_string(),
             is_sensitive: EventType::NonSensitive,
+            send_in_ci: true,
         });
         self
     }
@@ -76,6 +84,7 @@ impl RepoEventBuilder {
                 RepoType::Monorepo => "monorepo".to_string(),
             },
             is_sensitive: EventType::NonSensitive,
+            send_in_ci: true,
         });
         self
     }
@@ -85,6 +94,7 @@ impl RepoEventBuilder {
             key: "workspace_count".to_string(),
             value: size.to_string(),
             is_sensitive: EventType::NonSensitive,
+            send_in_ci: true,
         });
         self
     }

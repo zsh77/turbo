@@ -11918,6 +11918,7 @@ dependencies = [
  "tokio",
  "tracing",
  "turborepo-api-client",
+ "turborepo-ci",
  "turborepo-dirs",
  "turborepo-ui",
  "turborepo-vercel-api",
