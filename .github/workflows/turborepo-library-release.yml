@@ -75,7 +75,7 @@ jobs:
         if: ${{ matrix.settings.install }}
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -83,12 +83,11 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.settings.target }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         if: ${{ !matrix.settings.install }}
 
       - name: Setup Node
         uses: ./.github/actions/setup-node
-        with:
-          enable-corepack: false
         if: ${{ !matrix.settings.install }}
 
       - name: Setup toolchain
@@ -112,7 +111,7 @@ jobs:
     needs: [build]
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
