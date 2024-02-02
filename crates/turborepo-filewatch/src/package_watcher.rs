@@ -8,11 +8,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use futures::Stream;
 use notify::Event;
 use tokio::{
     join,
     sync::{
-        broadcast::{self, error::RecvError},
+        broadcast::{self, error::RecvError, Receiver},
         oneshot, watch,
     },
 };
@@ -22,7 +23,10 @@ use turborepo_repository::{
     package_manager::{self, Error, PackageManager, WorkspaceGlobs},
 };
 
-use crate::NotifyError;
+use crate::{
+    broadcast_map::{HashmapEvent, UpdatingHashMap},
+    NotifyError,
+};
 
 /// Watches the filesystem for changes to packages and package managers.
 pub struct PackageWatcher {
@@ -33,7 +37,13 @@ pub struct PackageWatcher {
     _exit_tx: oneshot::Sender<()>,
     _handle: tokio::task::JoinHandle<()>,
 
-    package_data: Arc<Mutex<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>>,
+    package_data:
+        Arc<Mutex<crate::broadcast_map::UpdatingHashMap<AbsoluteSystemPathBuf, WorkspaceData>>>,
+
+    /// this field is only used for creating new subscribers. it will probably
+    /// fill up which will waste some RAM but the queue has a fixed size
+    package_update_rx: broadcast::Receiver<(AbsoluteSystemPathBuf, HashmapEvent<WorkspaceData>)>,
+
     manager_rx: watch::Receiver<PackageManager>,
 }
 
@@ -48,11 +58,13 @@ impl PackageWatcher {
         let subscriber = Subscriber::new(exit_rx, root, recv, backup_discovery).await?;
         let manager_rx = subscriber.manager_receiver();
         let package_data = subscriber.package_data();
+        let package_update_rx = subscriber.subscribe();
         let handle = tokio::spawn(subscriber.watch());
         Ok(Self {
             _exit_tx: exit_tx,
             _handle: handle,
             package_data,
+            package_update_rx,
             manager_rx,
         })
     }
@@ -61,6 +73,7 @@ impl PackageWatcher {
         self.package_data
             .lock()
             .expect("not poisoned")
+            .as_inner()
             .clone()
             .into_values()
             .collect()
@@ -68,6 +81,10 @@ impl PackageWatcher {
 
     pub async fn get_package_manager(&self) -> PackageManager {
         *self.manager_rx.borrow()
+    }
+
+    pub fn subscribe(&self) -> Receiver<(AbsoluteSystemPathBuf, HashmapEvent<WorkspaceData>)> {
+        self.package_update_rx.resubscribe()
     }
 }
 
@@ -81,7 +98,7 @@ struct Subscriber<T: PackageDiscovery> {
     backup_discovery: T,
 
     // package manager data
-    package_data: Arc<Mutex<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>>,
+    package_data: Arc<Mutex<UpdatingHashMap<AbsoluteSystemPathBuf, WorkspaceData>>>,
     manager_rx: watch::Receiver<PackageManager>,
     manager_tx: watch::Sender<PackageManager>,
 
@@ -109,13 +126,13 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
         Ok(Self {
             exit_rx,
             filter,
-            package_data: Arc::new(Mutex::new(
+            package_data: Arc::new(Mutex::new(UpdatingHashMap::from(
                 initial_discovery
                     .workspaces
                     .into_iter()
                     .map(|p| (p.package_json.parent().expect("non-root").to_owned(), p))
-                    .collect(),
-            )),
+                    .collect::<HashMap<_, _>>(),
+            ))),
             recv,
             manager_rx,
             manager_tx,
@@ -125,6 +142,13 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
             package_json_path,
             workspace_config_path,
         })
+    }
+
+    pub fn subscribe(&self) -> Receiver<(AbsoluteSystemPathBuf, HashmapEvent<WorkspaceData>)> {
+        self.package_data
+            .lock()
+            .expect("only fails if poisoned")
+            .subscribe()
     }
 
     async fn watch(mut self) {
@@ -177,7 +201,9 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
         self.manager_rx.clone()
     }
 
-    pub fn package_data(&self) -> Arc<Mutex<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>> {
+    pub fn package_data(
+        &self,
+    ) -> Arc<Mutex<UpdatingHashMap<AbsoluteSystemPathBuf, WorkspaceData>>> {
         self.package_data.clone()
     }
 
@@ -220,11 +246,13 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
                     self.manager_tx.send(new_manager.package_manager).ok();
                     {
                         let mut data = self.package_data.lock().unwrap();
-                        *data = new_manager
-                            .workspaces
-                            .into_iter()
-                            .map(|p| (p.package_json.parent().expect("non-root").to_owned(), p))
-                            .collect();
+                        data.replace(
+                            new_manager
+                                .workspaces
+                                .into_iter()
+                                .map(|p| (p.package_json.parent().expect("non-root").to_owned(), p))
+                                .collect(),
+                        );
                     }
                     self.package_json_path = package_json_path;
                     self.workspace_config_path = workspace_config_path;
@@ -312,7 +340,7 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
                             },
                         );
                     } else {
-                        data.remove(&path_workspace);
+                        data.remove(path_workspace);
                     }
                 }
             }
@@ -322,13 +350,13 @@ impl<T: PackageDiscovery + Send + 'static> Subscriber<T> {
     async fn rediscover_packages(&mut self) {
         tracing::debug!("rediscovering packages");
         if let Ok(data) = self.backup_discovery.discover_packages().await {
-            let workspace = data
+            let workspace: HashMap<_, _> = data
                 .workspaces
                 .into_iter()
                 .map(|p| (p.package_json.parent().expect("non-root").to_owned(), p))
                 .collect();
             let mut data = self.package_data.lock().expect("not poisoned");
-            *data = workspace;
+            data.replace(workspace);
         } else {
             tracing::error!("error discovering packages");
         }
