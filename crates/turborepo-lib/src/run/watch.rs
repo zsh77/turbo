@@ -1,9 +1,11 @@
+use futures::StreamExt;
+
 use crate::{commands::CommandBase, run::Error, DaemonConnector};
 
-struct WatchClient {}
+pub struct WatchClient {}
 
 impl WatchClient {
-    async fn start(base: &CommandBase) -> Result<(), Error> {
+    pub async fn start(base: &CommandBase) -> Result<(), Error> {
         let pid_file = base.daemon_file_root().join_component("turbod.pid");
         let sock_file = base.daemon_file_root().join_component("turbod.sock");
 
@@ -14,8 +16,14 @@ impl WatchClient {
             sock_file: sock_file.clone(),
         };
 
-        let client = connector.connect().await?;
+        let mut client = connector.connect().await?;
 
-        todo!()
+        let mut hashes = client.subscribe_package_hashes().await?;
+        while let Some(hash) = hashes.next().await {
+            let hash = hash.unwrap();
+            println!("hash: {:?}", hash);
+        }
+
+        Ok(())
     }
 }

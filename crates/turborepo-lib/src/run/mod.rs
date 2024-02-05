@@ -9,7 +9,7 @@ pub(crate) mod package_hashes;
 mod scope;
 pub(crate) mod summary;
 pub mod task_id;
-mod watch;
+pub mod watch;
 
 use std::{
     collections::HashSet,

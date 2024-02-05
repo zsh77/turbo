@@ -1,7 +1,7 @@
 use std::io;
 
 use thiserror::Error;
-use tonic::{Code, Status};
+use tonic::{Code, Status, Streaming};
 use tracing::info;
 use turbopath::AbsoluteSystemPathBuf;
 
@@ -138,6 +138,18 @@ impl<T> DaemonClient<T> {
         let response = self
             .client
             .discover_package_hashes(proto::DiscoverPackageHashesRequest {})
+            .await?
+            .into_inner();
+
+        Ok(response)
+    }
+
+    pub async fn subscribe_package_hashes(
+        &mut self,
+    ) -> Result<Streaming<proto::DiscoverPackageHashesResponse>, DaemonError> {
+        let response = self
+            .client
+            .subscribe_package_hashes(proto::DiscoverPackageHashesRequest {})
             .await?
             .into_inner();
 

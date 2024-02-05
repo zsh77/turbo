@@ -3,7 +3,11 @@ use turborepo_telemetry::events::command::CommandEventBuilder;
 
 use crate::{commands::CommandBase, run, run::Run, signal::SignalHandler};
 
-pub async fn run(base: CommandBase, telemetry: CommandEventBuilder) -> Result<i32, run::Error> {
+pub async fn run(
+    base: CommandBase,
+    telemetry: CommandEventBuilder,
+    watch: bool,
+) -> Result<i32, run::Error> {
     #[cfg(windows)]
     let signal = {
         let mut ctrl_c = tokio::signal::windows::ctrl_c().map_err(run::Error::SignalHandler)?;
@@ -27,6 +31,11 @@ pub async fn run(base: CommandBase, telemetry: CommandEventBuilder) -> Result<i3
             }
         }
     };
+
+    if watch {
+        run::watch::WatchClient::start(&base).await?;
+        return Ok(0);
+    }
 
     let handler = SignalHandler::new(signal);
 
