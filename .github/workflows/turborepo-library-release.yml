@@ -18,10 +18,12 @@ jobs:
       matrix:
         settings:
           - host: macos-latest
+            container-options: "--rm"
             target: "aarch64-apple-darwin"
           - host: macos-latest
             target: "x86_64-apple-darwin"
           - host: ubuntu-latest
+            container-options: "--rm"
             target: "aarch64-unknown-linux-gnu"
             setup: |
               sudo apt update
@@ -31,6 +33,7 @@ jobs:
               echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           - host: ubuntu-latest
             target: "x86_64-unknown-linux-gnu"
+            container-options: "--rm"
             container: amazon/aws-lambda-nodejs:18
             install: |
               yum install -y gcc gcc-c++ git
@@ -40,6 +43,7 @@ jobs:
               pnpm install
           - host: ubuntu-latest
             target: "aarch64-unknown-linux-musl"
+            container-options: "--rm"
             install: |
               apt-get update
               apt-get install -y curl musl-tools
@@ -48,6 +52,7 @@ jobs:
               pnpm install
           - host: ubuntu-latest
             target: "x86_64-unknown-linux-musl"
+            container-options: "--rm"
             install: |
               apt-get update
               apt-get install -y curl musl-tools
@@ -66,8 +71,10 @@ jobs:
             rust-build-env: 'CC_aarch64_unknown_linux_musl=clang AR_aarch64_unknown_linux_musl=llvm-ar RUSTFLAGS="-Clink-self-contained=yes -Clinker=rust-lld"'
             setup: "sudo apt-get update && sudo apt-get install -y build-essential musl-tools clang llvm gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu"
           - host: windows-latest
+            container-options: "--rm"
             target: "aarch64-pc-windows-msvc"
           - host: windows-latest
+            container-options: "--rm"
             target: "x86_64-pc-windows-msvc"
 
     runs-on: ${{ matrix.settings.host }}
