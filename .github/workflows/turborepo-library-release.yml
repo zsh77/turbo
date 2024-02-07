@@ -17,13 +17,14 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-latest
-            container-options: "--rm"
-            target: "aarch64-apple-darwin"
-          - host: macos-latest
-            container-options: "--rm"
-            target: "x86_64-apple-darwin"
+          # - host: macos-latest
+          #   container-options: "--rm"
+          #   target: "aarch64-apple-darwin"
+          # - host: macos-latest
+          #   container-options: "--rm"
+          #   target: "x86_64-apple-darwin"
           - host: ubuntu-latest
+            name: "Linux arm64 GNU"
             container-options: "--rm"
             target: "aarch64-unknown-linux-gnu"
             setup: |
@@ -33,6 +34,7 @@ jobs:
               echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
               echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           - host: ubuntu-latest
+            name: "Linux x86 GNU"
             target: "x86_64-unknown-linux-gnu"
             container-options: "--rm"
             container: amazon/aws-lambda-nodejs:18
@@ -43,23 +45,25 @@ jobs:
             setup: |
               pnpm install
           - host: ubuntu-latest
+            name: "Linux x86 musl"
             container: ubuntu:xenial
             container-options: "--platform=linux/amd64 --rm"
-            container-setup: "apt-get update && apt-get install -y curl musl-tools sudo && npm i -g pnpm@8.9.0"
+            container-setup: "apt-get update && apt-get install -y curl musl-tools sudo nodejs && npm i -g pnpm@8.9.0"
             target: "x86_64-unknown-linux-musl"
             setup: "sudo apt-get install -y build-essential clang-5.0 lldb-5.0 llvm-5.0-dev libclang-5.0-dev && pnpm install"
           - host: ubuntu-latest
+            name: "Linux arm64 musl"
             container-options: "--rm"
             container-setup: "npm i -g pnpm@8.9.0"
             target: "aarch64-unknown-linux-musl"
             rust-build-env: 'CC_aarch64_unknown_linux_musl=clang AR_aarch64_unknown_linux_musl=llvm-ar RUSTFLAGS="-Clink-self-contained=yes -Clinker=rust-lld"'
             setup: "sudo apt-get update && sudo apt-get install -y build-essential musl-tools clang llvm gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu && pnpm install"
-          - host: windows-latest
-            container-options: "--rm"
-            target: "aarch64-pc-windows-msvc"
-          - host: windows-latest
-            container-options: "--rm"
-            target: "x86_64-pc-windows-msvc"
+          # - host: windows-latest
+          #   container-options: "--rm"
+          #   target: "aarch64-pc-windows-msvc"
+          # - host: windows-latest
+          #   container-options: "--rm"
+          #   target: "x86_64-pc-windows-msvc"
 
     runs-on: ${{ matrix.settings.host }}
     container:
@@ -99,7 +103,7 @@ jobs:
       - name: Build native library
         run: |
           cd packages/turbo-repository
-          pnpm build:release --target=${{ matrix.settings.target }} --cargo-flags=${{ matrix.settings.rust-build-env }}
+          ${{ matrix.settings.rust-build-env }} pnpm build:release --target=${{ matrix.settings.target }}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v3
