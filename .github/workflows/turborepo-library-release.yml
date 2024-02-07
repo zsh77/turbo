@@ -48,9 +48,9 @@ jobs:
             name: "Linux x86 musl"
             container: ubuntu:xenial
             container-options: "--platform=linux/amd64 --rm"
-            container-setup: "apt-get update && apt-get install -y curl musl-tools sudo nodejs && npm i -g pnpm@8.9.0"
+            container-setup: "apt-get update && apt-get install -y curl musl-tools sudo nodejs"
             target: "x86_64-unknown-linux-musl"
-            setup: "sudo apt-get install -y build-essential clang-5.0 lldb-5.0 llvm-5.0-dev libclang-5.0-dev && pnpm install"
+            setup: "npm i -g pnpm@8.9.0 && sudo apt-get install -y build-essential clang-5.0 lldb-5.0 llvm-5.0-dev libclang-5.0-dev && pnpm install"
           - host: ubuntu-latest
             name: "Linux arm64 musl"
             container-options: "--rm"
@@ -69,6 +69,8 @@ jobs:
     container:
       image: ${{ matrix.settings.container }}
       options: ${{ matrix.settings.container-options }}
+
+    name: ${{ matrix.settings.name }}
     steps:
       - name: Install Packages
         run: ${{ matrix.settings.install }}
