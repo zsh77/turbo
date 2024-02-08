@@ -166,6 +166,7 @@ impl PackageWatcher {
     ) -> Option<Result<PackageManager, watch::error::RecvError>> {
         let mut recv = self.package_manager_lazy.clone();
         // the borrow checker doesn't like returning immediately here so assign to a var
+        #[allow(clippy::let_and_return)]
         let data = if let Some(Ok(inner)) = recv.get_immediate().await {
             Some(Ok(inner.manager))
         } else {
