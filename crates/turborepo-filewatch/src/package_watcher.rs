@@ -198,9 +198,9 @@ struct Subscriber<T: PackageDiscovery> {
 
     // package manager data
     package_manager_tx: Arc<watch::Sender<Option<PackageManagerState>>>,
-    package_manager_lazy: OptionalWatch<PackageManagerState>,
+    package_manager_lazy: CookiedOptionalWatch<PackageManagerState>,
     package_data_tx: Arc<watch::Sender<Option<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>>>,
-    package_data_lazy: OptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>,
+    package_data_lazy: CookiedOptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>,
     cookie_tx: CookieRegister,
 }
 
@@ -225,9 +225,9 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
         backup_discovery: T,
     ) -> Result<Self, Error> {
         let writer = CookieWriter::new(&repo_root, Duration::from_secs(1), recv.clone());
-        let (package_data_tx, package_data_lazy) = OptionalWatch::new();
+        let (package_data_tx, cookie_tx, package_data_lazy) = CookiedOptionalWatch::new(writer);
         let package_data_tx = Arc::new(package_data_tx);
-        let (package_manager_tx, package_manager_lazy) = OptionalWatch::new();
+        let (package_manager_tx, package_manager_lazy) = package_data_lazy.child();
         let package_manager_tx = Arc::new(package_manager_tx);
 
         // we create a second optional watch here so that we can ensure it is ready and

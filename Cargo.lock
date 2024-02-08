@@ -11555,6 +11555,7 @@ dependencies = [
  "itertools 0.10.5",
  "libc",
  "notify 6.1.1",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

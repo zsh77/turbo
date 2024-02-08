@@ -110,7 +110,6 @@ impl Subscriber {
                         tracing::debug!("package changed, recalculating hashes");
 
                         changes
-                            .as_inner()
                             .iter()
                             .map(|(k, v)| {
                                 let package_json = File::open(&v.package_json).unwrap();

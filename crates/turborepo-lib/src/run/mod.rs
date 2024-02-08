@@ -5,6 +5,7 @@ mod error;
 pub(crate) mod global_hash;
 mod graph_visualizer;
 pub(crate) mod package_discovery;
+pub(crate) mod package_hashes;
 mod scope;
 pub(crate) mod summary;
 pub mod task_access;
@@ -402,6 +403,35 @@ impl Run {
 
         debug!("global hash: {}", global_hash);
 
+        // if we are forcing the daemon, we don't want to fallback to local discovery
+        let (fallback, duration) = if let Some(true) = self.opts.run_opts.daemon {
+            (None, Duration::MAX)
+        } else {
+            (
+                Some(package_hashes::LocalPackageHashes::new(
+                    scm.clone(),
+                    pkg_dep_graph
+                        .workspaces()
+                        .map(|(name, info)| (name.to_owned(), info.to_owned()))
+                        .collect(),
+                    engine.tasks().cloned(),
+                    engine.task_definitions().to_owned(),
+                    self.base.repo_root.clone(),
+                )),
+                Duration::from_millis(10),
+            )
+        };
+
+        let package_hasher = FallbackPackageHasher::new(
+            daemon.clone().map(DaemonPackageHasher::new),
+            fallback,
+            duration,
+        );
+
+        let workspace_hashes = package_hasher
+            .calculate_hashes(run_telemetry.clone())
+            .await?;
+
         let color_selector = ColorSelector::default();
 
         let runcache = Arc::new(RunCache::new(
@@ -429,16 +459,6 @@ impl Run {
         {
             global_env_mode = EnvMode::Strict;
         }
-
-        let workspaces = pkg_dep_graph.packages().collect();
-        let package_inputs_hashes = PackageInputsHashes::calculate_file_hashes(
-            &scm,
-            engine.tasks().par_bridge(),
-            workspaces,
-            engine.task_definitions(),
-            &self.repo_root,
-            &run_telemetry,
-        )?;
 
         if self.opts.run_opts.parallel {
             pkg_dep_graph.remove_package_dependencies();
@@ -491,7 +511,7 @@ impl Run {
             run_tracker,
             task_access,
             &self.opts.run_opts,
-            package_inputs_hashes,
+            workspace_hashes,
             &env_at_execution_start,
             &global_hash,
             global_env_mode,
