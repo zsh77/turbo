@@ -3,10 +3,10 @@ pub mod watch;
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPath, RelativeUnixPathBuf};
+use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPath};
 use turborepo_repository::{
     discovery::PackageDiscoveryBuilder,
-    package_graph::{self, PackageGraph, WorkspaceInfo, WorkspaceName},
+    package_graph::{self, PackageGraph, PackageInfo, PackageName},
     package_json::{self, PackageJson},
     package_manager,
 };
@@ -17,12 +17,10 @@ use super::task_id::TaskId;
 use crate::{
     config,
     engine::{EngineBuilder, TaskNode},
-    hash::FileHashes,
     run::error::Error,
     task_graph::TaskDefinition,
     task_hash::PackageInputsHashes,
     turbo_json::TurboJson,
-    DaemonClient,
 };
 
 pub trait PackageHasher {
@@ -97,13 +95,11 @@ where
             .with_root_tasks(root_turbo_json.pipeline.keys().cloned())
             .with_tasks(root_turbo_json.pipeline.keys().cloned())
             .with_turbo_jsons(Some(
-                [(WorkspaceName::Root, root_turbo_json)]
-                    .into_iter()
-                    .collect(),
+                [(PackageName::Root, root_turbo_json)].into_iter().collect(),
             ))
             .with_workspaces(
                 pkg_dep_graph
-                    .workspaces()
+                    .packages()
                     .map(|(name, _)| name.to_owned())
                     .collect(),
             )
@@ -113,7 +109,7 @@ where
         Ok(LocalPackageHashes::new(
             self.scm,
             pkg_dep_graph
-                .workspaces()
+                .packages()
                 .map(|(name, info)| (name.to_owned(), info.to_owned()))
                 .collect(),
             engine.tasks().cloned(),
@@ -125,7 +121,7 @@ where
 
 pub struct LocalPackageHashes {
     scm: SCM,
-    workspaces: HashMap<WorkspaceName, WorkspaceInfo>,
+    workspaces: HashMap<PackageName, PackageInfo>,
     tasks: Vec<TaskNode>,
     task_definitions: HashMap<TaskId<'static>, TaskDefinition>,
     repo_root: AbsoluteSystemPathBuf,
@@ -134,7 +130,7 @@ pub struct LocalPackageHashes {
 impl LocalPackageHashes {
     pub fn new(
         scm: SCM,
-        workspaces: HashMap<WorkspaceName, WorkspaceInfo>,
+        workspaces: HashMap<PackageName, PackageInfo>,
         tasks: impl Iterator<Item = TaskNode>,
         task_definitions: HashMap<TaskId<'static>, TaskDefinition>,
         repo_root: AbsoluteSystemPathBuf,

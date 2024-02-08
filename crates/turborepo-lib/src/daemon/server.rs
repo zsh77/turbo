@@ -36,6 +36,7 @@ use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
 use turborepo_filewatch::{
     cookies::CookieWriter,
     globwatcher::{Error as GlobWatcherError, GlobError, GlobSet, GlobWatcher},
+    package_hash_watcher::PackageHashWatcher,
     package_watcher::{PackageWatcher, WatchingPackageDiscovery},
     FileSystemWatcher, WatchError,
 };
@@ -65,6 +66,7 @@ pub struct FileWatching {
     watcher: Arc<FileSystemWatcher>,
     pub glob_watcher: Arc<GlobWatcher>,
     pub package_watcher: Arc<PackageWatcher>,
+    pub package_hash_watcher: Arc<PackageHashWatcher>,
 }
 
 #[derive(Debug, Error)]
@@ -121,10 +123,17 @@ impl FileWatching {
                 .map_err(|e| WatchError::Setup(format!("{:?}", e)))?,
         );
 
+        let package_hash_watcher = Arc::new(PackageHashWatcher::new(
+            repo_root,
+            recv,
+            package_watcher.clone(),
+        ));
+
         Ok(FileWatching {
             watcher,
             glob_watcher,
             package_watcher,
+            package_hash_watcher,
         })
     }
 }
@@ -654,6 +663,15 @@ mod test {
                 package_manager: PackageManager::Yarn,
                 workspaces: vec![],
             })
+        }
+
+        async fn discover_packages_blocking(
+            &self,
+        ) -> Result<
+            turborepo_repository::discovery::DiscoveryResponse,
+            turborepo_repository::discovery::Error,
+        > {
+            todo!()
         }
     }
 

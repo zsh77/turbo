@@ -134,7 +134,12 @@ impl Subscriber {
                         .await
                         .unwrap();
 
-                    package_graph_tx.send(Some(package_graph));
+                    // if this fails, there are no downstream listeners (and no way to recover)
+                    // so we can just bail. this will drop the packages_rx and cascade upwards
+                    if package_graph_tx.send(Some(package_graph)).is_err() {
+                        tracing::debug!("no package hash listeners, stopping");
+                        break;
+                    }
                 }
             }
         };

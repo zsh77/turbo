@@ -71,8 +71,15 @@ impl<PD, PH: PackageHasher + Send + Sync + 'static> WatchingPackageHasher<PD, PH
                     .unwrap()
                     .hashes;
 
-                hasher_tx.send(Some(hasher));
-                hashes_tx.send(Some(data));
+                // if either of these fail, it means that nobody is listening, so we can
+                // actually just exit early and stop processing events
+                if hasher_tx.send(Some(hasher)).is_err() {
+                    return;
+                }
+
+                if hashes_tx.send(Some(data)).is_err() {
+                    return;
+                }
 
                 let mut stream = file_watching.package_hash_watcher.subscribe();
                 while let Some(_update) = stream.next().await {

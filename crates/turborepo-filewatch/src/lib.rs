@@ -84,6 +84,7 @@ impl Display for NotifyError {
 }
 
 pub struct FileSystemWatcher {
+    /// The receiver is used to receive events from the filewatcher.
     receiver: OptionalWatch<broadcast::Receiver<Result<Event, NotifyError>>>,
     // _exit_ch exists to trigger a close on the receiver when an instance
     // of this struct is dropped. The task that is receiving events will exit,
@@ -255,6 +256,8 @@ async fn watch_events(
                                 }
                             }
                         }
+
+                        tracing::debug!("sending event");
                         // we don't care if we fail to send, it just means no one is currently watching
                         let _ = broadcast_sender.send(Ok(event));
                     },
@@ -266,6 +269,8 @@ async fn watch_events(
             }
         }
     }
+
+    tracing::debug!("filewatching stopped");
 }
 
 // Since we're manually watching the parent directories, we need

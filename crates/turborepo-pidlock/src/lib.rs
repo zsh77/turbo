@@ -4,7 +4,7 @@
 use std::{
     convert::TryInto,
     fs,
-    io::{self, Read, Write},
+    io::{self, ErrorKind, Read, Write},
     num::TryFromIntError,
     path::PathBuf,
     process,
@@ -165,7 +165,20 @@ impl Pidlock {
             }
         }
 
-        fs::remove_file(self.path.clone()).unwrap();
+        match fs::remove_file(self.path.clone()) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                // if this fails, it is not a problem, since the file is gone
+                // for example, we may be running in a temp dir that got cleaned
+                // before we could exit
+            }
+            Err(e) => {
+                return Err(PidlockError::File(PidFileError::IO(
+                    e,
+                    self.path.display().to_string(),
+                )))
+            }
+        }
 
         self.state = PidlockState::Released;
         Ok(())

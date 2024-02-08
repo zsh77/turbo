@@ -21,7 +21,6 @@ use std::{
 pub use cache::{ConfigCache, RunCache, TaskCache};
 use chrono::{DateTime, Local};
 use itertools::Itertools;
-use rayon::iter::ParallelBridge;
 use tracing::debug;
 use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPath};
 use turborepo_analytics::{start_analytics, AnalyticsHandle, AnalyticsSender};
@@ -59,11 +58,14 @@ use crate::{
     engine::{Engine, EngineBuilder},
     opts::Opts,
     process::ProcessManager,
-    run::{global_hash::get_global_hash_inputs, summary::RunTracker, task_access::TaskAccess},
+    run::{
+        global_hash::get_global_hash_inputs, package_hashes::PackageHasher, summary::RunTracker,
+        task_access::TaskAccess,
+    },
     shim::TurboState,
     signal::{SignalHandler, SignalSubscriber},
     task_graph::Visitor,
-    task_hash::{get_external_deps_hash, PackageInputsHashes},
+    task_hash::get_external_deps_hash,
     turbo_json::TurboJson,
 };
 
@@ -403,29 +405,15 @@ impl Run {
 
         debug!("global hash: {}", global_hash);
 
-        // if we are forcing the daemon, we don't want to fallback to local discovery
-        let (fallback, duration) = if let Some(true) = self.opts.run_opts.daemon {
-            (None, Duration::MAX)
-        } else {
-            (
-                Some(package_hashes::LocalPackageHashes::new(
-                    scm.clone(),
-                    pkg_dep_graph
-                        .workspaces()
-                        .map(|(name, info)| (name.to_owned(), info.to_owned()))
-                        .collect(),
-                    engine.tasks().cloned(),
-                    engine.task_definitions().to_owned(),
-                    self.base.repo_root.clone(),
-                )),
-                Duration::from_millis(10),
-            )
-        };
-
-        let package_hasher = FallbackPackageHasher::new(
-            daemon.clone().map(DaemonPackageHasher::new),
-            fallback,
-            duration,
+        let package_hasher = package_hashes::LocalPackageHashes::new(
+            scm.clone(),
+            pkg_dep_graph
+                .packages()
+                .map(|(name, info)| (name.to_owned(), info.to_owned()))
+                .collect(),
+            engine.tasks().cloned(),
+            engine.task_definitions().to_owned(),
+            self.repo_root.clone(),
         );
 
         let workspace_hashes = package_hasher

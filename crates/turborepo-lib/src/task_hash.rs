@@ -61,8 +61,8 @@ impl TaskHashable<'_> {
 
 #[derive(Debug, Default)]
 pub struct PackageInputsHashes {
-    hashes: HashMap<TaskId<'static>, String>,
-    expanded_hashes: HashMap<TaskId<'static>, FileHashes>,
+    pub hashes: HashMap<TaskId<'static>, String>,
+    pub expanded_hashes: HashMap<TaskId<'static>, FileHashes>,
 }
 
 impl PackageInputsHashes {
@@ -70,7 +70,7 @@ impl PackageInputsHashes {
     pub fn calculate_file_hashes<'a>(
         scm: &SCM,
         all_tasks: impl ParallelIterator<Item = &'a TaskNode>,
-        workspaces: HashMap<&PackageName, &PackageInfo>,
+        workspaces: &HashMap<PackageName, PackageInfo>,
         task_definitions: &HashMap<TaskId<'static>, TaskDefinition>,
         repo_root: &AbsoluteSystemPath,
         telemetry: &GenericEventBuilder,
