@@ -1,15 +1,16 @@
 use std::{collections::BinaryHeap, fs::OpenOptions, time::Duration};
 
+use futures::FutureExt;
 use notify::EventKind;
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
     time::error::Elapsed,
 };
 use tracing::trace;
 use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, PathRelation};
 
-use crate::{NotifyError, OptionalWatch};
+use crate::{optional_watch::SomeRef, NotifyError, OptionalWatch};
 
 #[derive(Debug, Error)]
 pub enum CookieError {
@@ -115,7 +116,7 @@ impl<T> CookieWatcher<T> {
         if !matches!(event_kind, EventKind::Create(_)) {
             return None;
         }
-        if let Some(serial) = self.serial_for_path(path) {
+        if let Some(serial) = serial_for_path(&self.root, path) {
             self.latest = serial;
             let mut ready_requests = Vec::new();
             while let Some(cookied_request) = self.pending_requests.pop() {
@@ -131,14 +132,14 @@ impl<T> CookieWatcher<T> {
             None
         }
     }
+}
 
-    fn serial_for_path(&self, path: &AbsoluteSystemPath) -> Option<usize> {
-        if self.root.relation_to_path(path) == PathRelation::Parent {
-            let filename = path.file_name()?;
-            filename.strip_suffix(".cookie")?.parse().ok()
-        } else {
-            None
-        }
+fn serial_for_path(root: &AbsoluteSystemPath, path: &AbsoluteSystemPath) -> Option<usize> {
+    if root.relation_to_path(path) == PathRelation::Parent {
+        let filename = path.file_name()?;
+        filename.strip_suffix(".cookie")?.parse().ok()
+    } else {
+        None
     }
 }
 
@@ -245,6 +246,87 @@ fn handle_cookie_request(
         let result = result.map(|_| *serial);
         // We don't care if the client has timed out and gone away
         let _ = req.send(result);
+    }
+}
+
+/// a lightweight wrapper around OptionalWatch that embeds cookie ids into the
+/// get call. for requests that require cookies (ie, waiting for filesystem
+/// flushes) then a cookie watch is ideal
+#[derive(Clone)]
+pub struct CookiedOptionalWatch<T> {
+    value: watch::Receiver<Option<T>>,
+    cookie: watch::Receiver<usize>,
+    update: CookieWriter,
+}
+
+impl<T> CookiedOptionalWatch<T> {
+    pub fn new(
+        update: CookieWriter,
+    ) -> (
+        watch::Sender<Option<T>>,
+        CookieRegister,
+        CookiedOptionalWatch<T>,
+    ) {
+        let (tx, rx) = watch::channel(None);
+        let (cookie_tx, cookie_rx) = watch::channel(0);
+        (
+            tx,
+            CookieRegister(cookie_tx, update.root().to_owned()),
+            CookiedOptionalWatch {
+                value: rx,
+                cookie: cookie_rx,
+                update,
+            },
+        )
+    }
+
+    /// Create a new child cookie watcher that inherits the same fs source as
+    /// this one
+    pub fn child<U>(&self) -> (watch::Sender<Option<U>>, CookiedOptionalWatch<U>) {
+        let (tx, rx) = watch::channel(None);
+        (
+            tx,
+            CookiedOptionalWatch {
+                value: rx,
+                cookie: self.cookie.clone(),
+                update: self.update.clone(),
+            },
+        )
+    }
+
+    pub async fn get(&mut self) -> Result<SomeRef<'_, T>, watch::error::RecvError> {
+        let next_id = self.update.cookie_request(()).await.unwrap().serial;
+        self.cookie.wait_for(|v| v >= &next_id).await?;
+        self.get_inner().await
+    }
+
+    /// Get the current value, if it is available.
+    ///
+    /// Unlike `OptionalWatch::get_immediate`, this method will block until the
+    /// cookie has been seen, at which point it will call `now_or_never` on the
+    /// value watch.
+    pub async fn get_immediate(
+        &mut self,
+    ) -> Option<Result<SomeRef<'_, T>, watch::error::RecvError>> {
+        let next_id = self.update.cookie_request(()).await.unwrap().serial;
+        self.cookie.wait_for(|v| v >= &next_id).await.ok()?;
+        self.get_inner().now_or_never()
+    }
+
+    async fn get_inner(&mut self) -> Result<SomeRef<'_, T>, watch::error::RecvError> {
+        self.value.wait_for(|f| f.is_some()).await?;
+        Ok(SomeRef(self.value.borrow()))
+    }
+}
+
+pub struct CookieRegister(watch::Sender<usize>, AbsoluteSystemPathBuf);
+impl CookieRegister {
+    pub fn register(&self, paths: &[&AbsoluteSystemPath]) {
+        for path in paths {
+            if let Some(serial) = serial_for_path(&self.1, path) {
+                let _ = self.0.send(serial);
+            }
+        }
     }
 }
 

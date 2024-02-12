@@ -1,9 +1,8 @@
 //! This module hosts the `PackageWatcher` type, which is used to watch the
 //! filesystem for changes to packages.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use futures::FutureExt;
 use notify::Event;
 use tokio::{
     join,
@@ -18,7 +17,11 @@ use turborepo_repository::{
     package_manager::{self, Error, PackageManager, WorkspaceGlobs},
 };
 
-use crate::{optional_watch::OptionalWatch, NotifyError};
+use crate::{
+    cookies::{CookieRegister, CookieWriter, CookiedOptionalWatch},
+    optional_watch::OptionalWatch,
+    NotifyError,
+};
 
 /// A package discovery strategy that watches the file system for changes. Basic
 /// idea:
@@ -48,11 +51,13 @@ impl PackageDiscovery for WatchingPackageDiscovery {
         let package_manager = self
             .watcher
             .get_package_manager()
+            .await
             .and_then(Result::ok)
             .ok_or(discovery::Error::Unavailable)?;
         let workspaces = self
             .watcher
             .get_package_data()
+            .await
             .and_then(Result::ok)
             .ok_or(discovery::Error::Unavailable)?;
 
@@ -94,10 +99,10 @@ pub struct PackageWatcher {
     _handle: tokio::task::JoinHandle<()>,
 
     /// The current package data, if available.
-    package_data: OptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>,
+    package_data: CookiedOptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>,
 
     /// The current package manager, if available.
-    package_manager_lazy: OptionalWatch<PackageManagerState>,
+    package_manager_lazy: CookiedOptionalWatch<PackageManagerState>,
 }
 
 impl PackageWatcher {
@@ -133,9 +138,11 @@ impl PackageWatcher {
 
     /// A convenience wrapper around `FutureExt::now_or_never` to let you get
     /// the package data if it is immediately available.
-    pub fn get_package_data(&self) -> Option<Result<Vec<WorkspaceData>, watch::error::RecvError>> {
+    pub async fn get_package_data(
+        &self,
+    ) -> Option<Result<Vec<WorkspaceData>, watch::error::RecvError>> {
         let mut recv = self.package_data.clone();
-        let data = if let Some(Ok(inner)) = recv.get().now_or_never() {
+        let data = if let Some(Ok(inner)) = recv.get_immediate().await {
             Some(Ok(inner.values().cloned().collect()))
         } else {
             None
@@ -154,10 +161,12 @@ impl PackageWatcher {
 
     /// A convenience wrapper around `FutureExt::now_or_never` to let you get
     /// the package manager if it is immediately available.
-    pub fn get_package_manager(&self) -> Option<Result<PackageManager, watch::error::RecvError>> {
+    pub async fn get_package_manager(
+        &self,
+    ) -> Option<Result<PackageManager, watch::error::RecvError>> {
         let mut recv = self.package_manager_lazy.clone();
         // the borrow checker doesn't like returning immediately here so assign to a var
-        let data = if let Some(Ok(inner)) = recv.get().now_or_never() {
+        let data = if let Some(Ok(inner)) = recv.get_immediate().await {
             Some(Ok(inner.manager))
         } else {
             None
@@ -165,7 +174,7 @@ impl PackageWatcher {
         data
     }
 
-    pub fn watch(&self) -> OptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>> {
+    pub fn watch(&self) -> CookiedOptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>> {
         self.package_data.clone()
     }
 }
@@ -191,6 +200,7 @@ struct Subscriber<T: PackageDiscovery> {
     package_manager_lazy: OptionalWatch<PackageManagerState>,
     package_data_tx: Arc<watch::Sender<Option<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>>>,
     package_data_lazy: OptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>>,
+    cookie_tx: CookieRegister,
 }
 
 /// A collection of state inferred from a package manager. All this data will
@@ -213,6 +223,7 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
         mut recv: OptionalWatch<broadcast::Receiver<Result<Event, NotifyError>>>,
         backup_discovery: T,
     ) -> Result<Self, Error> {
+        let writer = CookieWriter::new(&repo_root, Duration::from_secs(1), recv.clone());
         let (package_data_tx, package_data_lazy) = OptionalWatch::new();
         let package_data_tx = Arc::new(package_data_tx);
         let (package_manager_tx, package_manager_lazy) = OptionalWatch::new();
@@ -317,13 +328,11 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
             package_data_tx,
             package_manager_lazy,
             package_manager_tx,
+            cookie_tx,
         })
     }
 
     async fn watch(mut self, exit_rx: oneshot::Receiver<()>) {
-        // initialize the contents
-        self.rediscover_packages().await;
-
         let process = async move {
             let Ok(mut recv) = self
                 .file_event_receiver_lazy
@@ -386,11 +395,13 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
         Ok((workspace_config_path, filter))
     }
 
-    pub fn manager_receiver(&self) -> OptionalWatch<PackageManagerState> {
+    pub fn manager_receiver(&self) -> CookiedOptionalWatch<PackageManagerState> {
         self.package_manager_lazy.clone()
     }
 
-    pub fn package_data(&self) -> OptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>> {
+    pub fn package_data(
+        &self,
+    ) -> CookiedOptionalWatch<HashMap<AbsoluteSystemPathBuf, WorkspaceData>> {
         self.package_data_lazy.clone()
     }
 
@@ -409,7 +420,7 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
             }
         }
 
-        match self.have_workspace_globs_changed(file_event).await {
+        let out = match self.have_workspace_globs_changed(file_event).await {
             Ok(true) => {
                 //
                 self.rediscover_packages().await;
@@ -420,7 +431,19 @@ impl<T: PackageDiscovery + Send + Sync + 'static> Subscriber<T> {
                 self.handle_package_json_change(file_event).await
             }
             Err(()) => Err(()),
-        }
+        };
+
+        // now that we have updated the state, we should bump the cookies so that
+        // people waiting on downstream cookie watchers can get the new state
+        self.cookie_tx.register(
+            &file_event
+                .paths
+                .iter()
+                .map(|p| AbsoluteSystemPath::from_std_path(p).expect("these paths are absolute"))
+                .collect::<Vec<_>>(),
+        );
+
+        out
     }
 
     /// Returns Err(()) if the package manager channel is closed, indicating
