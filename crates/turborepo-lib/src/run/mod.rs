@@ -283,7 +283,8 @@ impl Run {
 
         let mut pkg_dep_graph = {
             let builder = PackageGraph::builder(&self.repo_root, root_package_json.clone())
-                .with_single_package_mode(self.opts.run_opts.single_package);
+                .with_single_package_mode(self.opts.run_opts.single_package)
+                .with_telemetry(Some(run_telemetry.clone()));
 
             #[cfg(feature = "daemon-package-discovery")]
             let builder = {

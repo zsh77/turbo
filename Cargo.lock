@@ -11797,6 +11797,7 @@ dependencies = [
  "turborepo-graph-utils",
  "turborepo-lockfiles",
  "turborepo-scm",
+ "turborepo-telemetry",
  "wax",
  "which",
 ]

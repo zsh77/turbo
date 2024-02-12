@@ -178,7 +178,7 @@ impl GlobWatcher {
 
             // if the receiver is closed, it means the glob watcher is closed and we
             // probably don't want to start the glob tracker
-            let (query_ch, query_recv) = mpsc::channel(128);
+            let (query_ch, query_recv) = mpsc::channel(256);
             if query_ch_tx.send(Some(query_ch)).is_err() {
                 tracing::debug!("no queryers for glob watcher, exiting");
                 return;
