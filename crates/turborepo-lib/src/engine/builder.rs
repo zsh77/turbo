@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use itertools::Itertools;
 use miette::Diagnostic;
-use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath};
+use turbopath::{
+    AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf,
+};
 use turborepo_graph_utils as graph;
 use turborepo_repository::{
     package_graph::{PackageGraph, PackageName, PackageNode, ROOT_PKG_NAME},
@@ -268,17 +270,17 @@ impl<'a> EngineBuilder<'a> {
 }
 
 pub trait PackageLookup {
-    fn package_json(&self, package: &PackageName) -> Option<&PackageJson>;
-    fn package_dir(&self, package: &PackageName) -> Option<&AnchoredSystemPath>;
+    fn package_json(&self, package: &PackageName) -> Option<PackageJson>;
+    fn package_dir(&self, package: &PackageName) -> Option<AnchoredSystemPathBuf>;
 }
 
 impl PackageLookup for &PackageGraph {
-    fn package_json(&self, package: &PackageName) -> Option<&PackageJson> {
-        (*self).package_json(package)
+    fn package_json(&self, package: &PackageName) -> Option<PackageJson> {
+        (*self).package_json(package).cloned()
     }
 
-    fn package_dir(&self, package: &PackageName) -> Option<&AnchoredSystemPath> {
-        (*self).package_dir(package)
+    fn package_dir(&self, package: &PackageName) -> Option<AnchoredSystemPathBuf> {
+        (*self).package_dir(package).map(|path| path.to_owned())
     }
 }
 
@@ -300,8 +302,12 @@ impl<PL: PackageLookup> TaskDefinitionBuilder<PL> {
         }
     }
 
+    pub fn build(self) -> HashMap<TaskId<'static>, TaskDefinition> {
+        self.definitions
+    }
+
     /// Add a task definition to the builder, from the given config
-    fn add_task_definition_from(
+    pub fn add_task_definition_from(
         &mut self,
         turbo_jsons: &mut HashMap<PackageName, TurboJson>,
         task_id: &TaskId<'static>,
@@ -439,8 +445,8 @@ impl<PL: PackageLookup> TaskDefinitionBuilder<PL> {
                 })?;
         Ok(TurboJson::load(
             &self.repo_root,
-            workspace_dir,
-            package_json,
+            &workspace_dir,
+            &package_json,
             self.is_single,
         )?)
     }

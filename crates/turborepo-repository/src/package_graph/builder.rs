@@ -133,6 +133,11 @@ where
     T::Error: Into<crate::package_manager::Error>,
 {
     /// Build the `PackageGraph`.
+    ///
+    /// This may error if:
+    /// - the `PackageDiscoveryBuilder` fails
+    /// - parsing the package jsons fails
+    /// - resolving the lockfile fails
     #[tracing::instrument(skip(self))]
     pub async fn build(self) -> Result<PackageGraph, Error> {
         let is_single_package = self.is_single_package;
@@ -283,9 +288,10 @@ impl<'a, T: PackageDiscovery> BuildState<'a, ResolvedPackageManager, T> {
             None => {
                 let mut jsons = HashMap::new();
                 for path in self.package_discovery.discover_packages().await?.workspaces {
-                    match PackageJson::load(&path.package_json) {
+                    let path = self.repo_root.resolve(&path.package_json);
+                    match PackageJson::load(&path) {
                         Ok(json) => {
-                            jsons.insert(path.package_json, json);
+                            jsons.insert(path, json);
                         }
                         // if we get here, it could stem from a package watch error, so we should
                         // fall back to the more expensive local discovery and log a telemetry event
@@ -803,6 +809,15 @@ mod test {
                 package_manager: crate::package_manager::PackageManager::Npm,
                 workspaces: vec![],
             })
+        }
+
+        async fn discover_packages_blocking(
+            &self,
+        ) -> Result<
+            turborepo_repository::discovery::DiscoveryResponse,
+            turborepo_repository::discovery::Error,
+        > {
+            todo!()
         }
     }
 

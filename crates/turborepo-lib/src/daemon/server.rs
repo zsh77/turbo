@@ -36,16 +36,25 @@ use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
 use turborepo_filewatch::{
     cookies::CookieWriter,
     globwatcher::{Error as GlobWatcherError, GlobError, GlobSet, GlobWatcher},
-    package_hash_watcher::PackageHashWatcher,
     package_watcher::{PackageWatcher, WatchingPackageDiscovery},
     FileSystemWatcher, WatchError,
 };
 use turborepo_repository::discovery::{
     LocalPackageDiscoveryBuilder, PackageDiscovery, PackageDiscoveryBuilder,
 };
+use turborepo_scm::SCM;
 
-use super::{bump_timeout::BumpTimeout, endpoint::SocketOpenError, proto};
-use crate::daemon::{bump_timeout_layer::BumpTimeoutLayer, endpoint::listen_socket, Paths};
+use super::{bump_timeout::BumpTimeout, endpoint::SocketOpenError, proto, Paths};
+use crate::{
+    daemon::{bump_timeout_layer::BumpTimeoutLayer, endpoint::listen_socket},
+    run::{
+        package_hashes::{
+            package_hash_watcher::PackageHashWatcher, watch::WatchingPackageHasher,
+            LocalPackageHasherBuilder, LocalPackageHashes, PackageHasher,
+        },
+        task_id::TaskId,
+    },
+};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -106,26 +115,31 @@ impl FileWatching {
         backup_discovery: PD,
     ) -> Result<FileWatching, WatchError> {
         let watcher = Arc::new(FileSystemWatcher::new_with_default_cookie_dir(&repo_root)?);
-        let recv = watcher.watch();
+        let file_updates = watcher.watch();
 
-        let cookie_watcher = CookieWriter::new(
+        let cookie_writer = CookieWriter::new(
             watcher.cookie_dir(),
             Duration::from_millis(100),
-            recv.clone(),
+            file_updates.clone(),
         );
         let glob_watcher = Arc::new(GlobWatcher::new(
             repo_root.clone(),
-            cookie_watcher,
-            recv.clone(),
+            cookie_writer.clone(),
+            file_updates.clone(),
         ));
         let package_watcher = Arc::new(
-            PackageWatcher::new(repo_root.clone(), recv.clone(), backup_discovery)
-                .map_err(|e| WatchError::Setup(format!("{:?}", e)))?,
+            PackageWatcher::new(
+                repo_root.clone(),
+                file_updates.clone(),
+                backup_discovery,
+                cookie_writer.clone(),
+            )
+            .map_err(|e| WatchError::Setup(format!("{:?}", e)))?,
         );
 
         let package_hash_watcher = Arc::new(PackageHashWatcher::new(
             repo_root,
-            recv,
+            file_updates,
             package_watcher.clone(),
         ));
 
@@ -279,19 +293,25 @@ where
     }
 }
 
-struct TurboGrpcServiceInner<PD> {
+struct TurboGrpcServiceInner<PD, PH> {
     shutdown: mpsc::Sender<()>,
     file_watching: FileWatching,
     times_saved: Arc<Mutex<HashMap<String, u64>>>,
     start_time: Instant,
     log_file: AbsoluteSystemPathBuf,
     package_discovery: PD,
+    package_hasher: PH,
 }
 
 // we have a grpc service that uses watching package discovery, and where the
 // watching package hasher also uses watching package discovery as well as
 // falling back to a local package hasher
-impl TurboGrpcServiceInner<Arc<WatchingPackageDiscovery>> {
+impl
+    TurboGrpcServiceInner<
+        Arc<WatchingPackageDiscovery>,
+        Arc<WatchingPackageHasher<Arc<WatchingPackageDiscovery>>>,
+    >
+{
     pub fn new<PD: Sync + PackageDiscovery + Send + 'static>(
         package_discovery_backup: PD,
         repo_root: AbsoluteSystemPathBuf,
@@ -309,6 +329,12 @@ impl TurboGrpcServiceInner<Arc<WatchingPackageDiscovery>> {
             file_watching.package_watcher.clone(),
         ));
 
+        let package_hasher = Arc::new(WatchingPackageHasher::new(
+            package_discovery.clone(),
+            Duration::from_secs(5),
+            file_watching.clone(),
+        ));
+
         // exit_root_watch delivers a signal to the root watch loop to exit.
         // In the event that the server shuts down via some other mechanism, this
         // cleans up root watching task.
@@ -323,6 +349,7 @@ impl TurboGrpcServiceInner<Arc<WatchingPackageDiscovery>> {
         (
             TurboGrpcServiceInner {
                 package_discovery,
+                package_hasher,
                 shutdown: trigger_shutdown,
                 file_watching,
                 times_saved: Arc::new(Mutex::new(HashMap::new())),
@@ -335,9 +362,10 @@ impl TurboGrpcServiceInner<Arc<WatchingPackageDiscovery>> {
     }
 }
 
-impl<PD> TurboGrpcServiceInner<PD>
+impl<PD, PH> TurboGrpcServiceInner<PD, PH>
 where
     PD: PackageDiscovery + Send + Sync + 'static,
+    PH: PackageHasher + Send + Sync + 'static,
 {
     async fn trigger_shutdown(&self) {
         info!("triggering shutdown");
@@ -405,7 +433,7 @@ async fn watch_root(
                 let Ok(event) = event else {
                     break;
                 };
-                tracing::debug!("root watcher received event: {:?}", event);
+                tracing::trace!("root watcher received event: {:?}", event);
                 let should_trigger_shutdown = match event {
                     // filewatching can throw some weird events, so check that the root is actually gone
                     // before triggering a shutdown
@@ -430,8 +458,8 @@ async fn watch_root(
 }
 
 #[tonic::async_trait]
-impl<PD: PackageDiscovery + Send + Sync + 'static> proto::turbod_server::Turbod
-    for TurboGrpcServiceInner<PD>
+impl<PD: PackageDiscovery + Send + Sync + 'static, PH: PackageHasher + Send + Sync + 'static>
+    proto::turbod_server::Turbod for TurboGrpcServiceInner<PD, PH>
 {
     async fn hello(
         &self,
@@ -575,6 +603,40 @@ impl<PD: PackageDiscovery + Send + Sync + 'static> proto::turbod_server::Turbod
                 }
             })
     }
+
+    async fn discover_package_hashes(
+        &self,
+        request: tonic::Request<proto::DiscoverPackageHashesRequest>,
+    ) -> Result<tonic::Response<proto::DiscoverPackageHashesResponse>, tonic::Status> {
+        let inner = request.into_inner();
+        let hashes = self
+            .package_hasher
+            .calculate_hashes(
+                Default::default(),
+                inner
+                    .tasks
+                    .into_iter()
+                    .map(|t| TaskId::new(&t.package, &t.task).into_owned().into())
+                    .collect(),
+            )
+            .await
+            .unwrap();
+
+        Ok(tonic::Response::new(proto::DiscoverPackageHashesResponse {
+            package_hashes: hashes
+                .hashes
+                .into_iter()
+                .map(|(k, v)| (k.into_parts(), v))
+                .map(|((package, task), v)| proto::PackageTaskHash {
+                    task_id: Some(proto::TaskId {
+                        package: package.to_string(),
+                        task: task.to_string(),
+                    }),
+                    hash: v,
+                })
+                .collect(),
+        }))
+    }
 }
 
 /// Determine whether a server can serve a client's request based on its
@@ -600,7 +662,7 @@ fn compare_versions(client: Version, server: Version, constraint: proto::Version
     }
 }
 
-impl<PD> NamedService for TurboGrpcServiceInner<PD> {
+impl<PD, PH> NamedService for TurboGrpcServiceInner<PD, PH> {
     const NAME: &'static str = "turborepo.Daemon";
 }
 

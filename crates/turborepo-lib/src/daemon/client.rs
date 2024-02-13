@@ -12,7 +12,9 @@ use super::{
     proto::DiscoverPackagesResponse,
     Paths,
 };
-use crate::{daemon::proto, globwatcher::HashGlobSetupError};
+use crate::{
+    daemon::proto, engine::TaskNode, globwatcher::HashGlobSetupError, run::task_id::TaskId,
+};
 
 #[derive(Debug, Clone)]
 pub struct DaemonClient<T> {
@@ -140,6 +142,30 @@ impl<T> DaemonClient<T> {
         let response = self
             .client
             .discover_packages_blocking(proto::DiscoverPackagesRequest {})
+            .await?
+            .into_inner();
+
+        Ok(response)
+    }
+
+    pub(crate) async fn discover_package_hashes(
+        &self,
+        tasks: Vec<TaskNode>,
+    ) -> Result<proto::DiscoverPackageHashesResponse, DaemonError> {
+        let mut client = self.client.clone();
+        let response = client
+            .discover_package_hashes(proto::DiscoverPackageHashesRequest {
+                tasks: tasks
+                    .into_iter()
+                    .filter_map(|t| match t {
+                        TaskNode::Root => None,
+                        TaskNode::Task(t) => Some(proto::TaskId {
+                            package: t.package().to_string(),
+                            task: t.task().to_string(),
+                        }),
+                    })
+                    .collect(),
+            })
             .await?
             .into_inner();
 

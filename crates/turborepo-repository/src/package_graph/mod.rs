@@ -36,7 +36,7 @@ pub struct PackageGraph {
 /// There are other structs in this module that have "Workspace" in the name,
 /// but they do NOT follow the glossary, and instead mean "package" when they
 /// say Workspace. Some of these are labeled as such.
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq, Hash, Debug)]
 pub struct WorkspacePackage {
     pub name: PackageName,
     pub path: AnchoredSystemPathBuf,
@@ -461,6 +461,15 @@ mod test {
                 package_manager: PackageManager::Npm,
                 workspaces: vec![],
             })
+        }
+
+        async fn discover_packages_blocking(
+            &self,
+        ) -> Result<
+            turborepo_repository::discovery::DiscoveryResponse,
+            turborepo_repository::discovery::Error,
+        > {
+            todo!()
         }
     }
 

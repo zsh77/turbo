@@ -15,7 +15,7 @@ use std::{
     collections::HashSet,
     io::{IsTerminal, Write},
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 pub use cache::{ConfigCache, RunCache, TaskCache};
@@ -59,7 +59,9 @@ use crate::{
     opts::Opts,
     process::ProcessManager,
     run::{
-        global_hash::get_global_hash_inputs, package_hashes::PackageHasher, summary::RunTracker,
+        global_hash::get_global_hash_inputs,
+        package_hashes::{DaemonPackageHasher, FallbackPackageHasher, PackageHasher},
+        summary::RunTracker,
         task_access::TaskAccess,
     },
     shim::TurboState,
@@ -405,19 +407,35 @@ impl Run {
 
         debug!("global hash: {}", global_hash);
 
-        let package_hasher = package_hashes::LocalPackageHashes::new(
-            scm.clone(),
-            pkg_dep_graph
-                .packages()
-                .map(|(name, info)| (name.to_owned(), info.to_owned()))
-                .collect(),
-            engine.tasks().cloned(),
-            engine.task_definitions().to_owned(),
-            self.repo_root.clone(),
+        let (fallback, duration) = if let Some(true) = self.opts.run_opts.daemon {
+            (None, Duration::MAX)
+        } else {
+            (
+                Some(package_hashes::LocalPackageHashes::new(
+                    scm.clone(),
+                    pkg_dep_graph
+                        .packages()
+                        .map(|(name, info)| (name.to_owned(), info.to_owned()))
+                        .collect(),
+                    engine
+                        .task_definitions()
+                        .iter()
+                        .map(|(k, v)| (k.to_owned(), v.to_owned().into()))
+                        .collect(),
+                    self.repo_root.clone(),
+                )),
+                Duration::from_millis(1000),
+            )
+        };
+
+        let package_hasher = FallbackPackageHasher::new(
+            daemon.clone().map(DaemonPackageHasher::new),
+            fallback,
+            duration,
         );
 
         let workspace_hashes = package_hasher
-            .calculate_hashes(run_telemetry.clone())
+            .calculate_hashes(run_telemetry.clone(), engine.tasks().cloned().collect())
             .await?;
 
         let color_selector = ColorSelector::default();

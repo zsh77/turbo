@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use tokio_stream::{iter, StreamExt};
-use turbopath::AbsoluteSystemPathBuf;
+use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPathBuf};
 
 use crate::{
     package_json::PackageJson,
@@ -21,8 +21,8 @@ use crate::{
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WorkspaceData {
-    pub package_json: AbsoluteSystemPathBuf,
-    pub turbo_json: Option<AbsoluteSystemPathBuf>,
+    pub package_json: AnchoredSystemPathBuf,
+    pub turbo_json: Option<AnchoredSystemPathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,19 +174,25 @@ impl PackageDiscovery for LocalPackageDiscovery {
         };
 
         iter(package_paths)
-            .then(|path| async move {
-                let potential_turbo = path
-                    .parent()
-                    .expect("non-root")
-                    .join_component("turbo.json");
-                let potential_turbo_exists = tokio::fs::try_exists(potential_turbo.as_path()).await;
+            .then(|path| {
+                let repo_root = self.repo_root.clone();
+                async move {
+                    let potential_turbo = path
+                        .parent()
+                        .expect("non-root")
+                        .join_component("turbo.json");
+                    let potential_turbo_exists =
+                        tokio::fs::try_exists(potential_turbo.as_path()).await;
 
-                Ok(WorkspaceData {
-                    package_json: path,
-                    turbo_json: potential_turbo_exists
-                        .unwrap_or_default()
-                        .then_some(potential_turbo),
-                })
+                    Ok(WorkspaceData {
+                        package_json: repo_root.anchor(&path).expect("always root relative"),
+                        turbo_json: potential_turbo_exists.unwrap_or_default().then_some(
+                            repo_root
+                                .anchor(&potential_turbo)
+                                .expect("always root relative"),
+                        ),
+                    })
+                }
             })
             .collect::<Result<Vec<_>, _>>()
             .await
@@ -358,6 +364,15 @@ mod fallback_tests {
                 })
             }
         }
+
+        async fn discover_packages_blocking(
+            &self,
+        ) -> Result<
+            turborepo_repository::discovery::DiscoveryResponse,
+            turborepo_repository::discovery::Error,
+        > {
+            todo!()
+        }
     }
 
     #[test]
@@ -425,6 +440,15 @@ mod caching_tests {
                 package_manager: PackageManager::Npm,
                 workspaces: vec![],
             })
+        }
+
+        async fn discover_packages_blocking(
+            &self,
+        ) -> Result<
+            turborepo_repository::discovery::DiscoveryResponse,
+            turborepo_repository::discovery::Error,
+        > {
+            todo!()
         }
     }
 

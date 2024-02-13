@@ -49,4 +49,6 @@ pub enum Error {
     SignalHandler(std::io::Error),
     #[error("package hashing unavailable")]
     PackageHashingUnavailable,
+    #[error("daemon")]
+    Daemon,
 }

@@ -106,6 +106,11 @@ impl<'a> TaskId<'a> {
             task: static_cow(task),
         }
     }
+
+    pub fn into_parts(self) -> (Cow<'a, str>, Cow<'a, str>) {
+        let TaskId { package, task } = self;
+        (package, task)
+    }
 }
 
 impl<'a> TryFrom<&'a str> for TaskId<'a> {

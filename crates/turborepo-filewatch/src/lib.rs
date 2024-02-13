@@ -41,7 +41,6 @@ pub mod cookies;
 mod fsevent;
 pub mod globwatcher;
 mod optional_watch;
-pub mod package_hash_watcher;
 pub mod package_watcher;
 
 pub use optional_watch::OptionalWatch;
@@ -257,7 +256,7 @@ async fn watch_events(
                             }
                         }
 
-                        tracing::debug!("sending event");
+                        tracing::trace!("sending event {:?}: {:?}", event.kind, event.paths);
                         // we don't care if we fail to send, it just means no one is currently watching
                         let _ = broadcast_sender.send(Ok(event));
                     },

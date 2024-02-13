@@ -1,4 +1,4 @@
-use turbopath::AbsoluteSystemPathBuf;
+use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPathBuf};
 use turborepo_repository::discovery::{DiscoveryResponse, Error, PackageDiscovery, WorkspaceData};
 
 use crate::daemon::{proto::PackageManager, DaemonClient};
@@ -31,10 +31,11 @@ impl<C: Clone + Send + Sync> PackageDiscovery for DaemonPackageDiscovery<C> {
                 .package_files
                 .into_iter()
                 .map(|p| WorkspaceData {
-                    package_json: AbsoluteSystemPathBuf::new(p.package_json).expect("absolute"),
+                    package_json: AnchoredSystemPathBuf::from_raw(p.package_json)
+                        .expect("relative"),
                     turbo_json: p
                         .turbo_json
-                        .map(|t| AbsoluteSystemPathBuf::new(t).expect("absolute")),
+                        .map(|t| AnchoredSystemPathBuf::from_raw(t).expect("relative")),
                 })
                 .collect(),
             package_manager: PackageManager::from_i32(response.package_manager)
@@ -59,10 +60,11 @@ impl<C: Clone + Send + Sync> PackageDiscovery for DaemonPackageDiscovery<C> {
                 .package_files
                 .into_iter()
                 .map(|p| WorkspaceData {
-                    package_json: AbsoluteSystemPathBuf::new(p.package_json).expect("absolute"),
+                    package_json: AnchoredSystemPathBuf::from_raw(p.package_json)
+                        .expect("relative"),
                     turbo_json: p
                         .turbo_json
-                        .map(|t| AbsoluteSystemPathBuf::new(t).expect("absolute")),
+                        .map(|t| AnchoredSystemPathBuf::from_raw(t).expect("relative")),
                 })
                 .collect(),
             package_manager: PackageManager::from_i32(response.package_manager)

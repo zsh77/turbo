@@ -15,6 +15,7 @@ pub enum LockfileChange {
     WithContent(Vec<u8>),
 }
 
+#[derive(Debug)]
 pub enum PackageChanges {
     All,
     Some(HashSet<WorkspacePackage>),

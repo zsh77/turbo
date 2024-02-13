@@ -7,7 +7,9 @@ use rayon::prelude::*;
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{debug, Span};
-use turbopath::{AbsoluteSystemPath, AnchoredSystemPath, AnchoredSystemPathBuf};
+use turbopath::{
+    AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf,
+};
 use turborepo_cache::CacheHitMetadata;
 use turborepo_env::{BySource, DetailedMap, EnvironmentVariableMap, ResolvedEnvMode};
 use turborepo_repository::package_graph::{PackageInfo, PackageName};
@@ -65,13 +67,30 @@ pub struct PackageInputsHashes {
     pub expanded_hashes: HashMap<TaskId<'static>, FileHashes>,
 }
 
+/// The set of data required from the TaskDefinition to calculate the hash of a
+/// task's inputs. This is guaranteed to be free of runtime config.
+#[derive(Debug, Serialize)]
+pub struct FileHashInputs {
+    inputs: Vec<String>,
+    dot_env: Option<Vec<turbopath::RelativeUnixPathBuf>>,
+}
+
+impl From<TaskDefinition> for FileHashInputs {
+    fn from(task_definition: TaskDefinition) -> Self {
+        Self {
+            inputs: task_definition.inputs,
+            dot_env: task_definition.dot_env,
+        }
+    }
+}
+
 impl PackageInputsHashes {
     #[tracing::instrument(skip(all_tasks, workspaces, task_definitions, repo_root, scm))]
     pub fn calculate_file_hashes<'a>(
         scm: &SCM,
         all_tasks: impl ParallelIterator<Item = &'a TaskNode>,
         workspaces: &HashMap<PackageName, PackageInfo>,
-        task_definitions: &HashMap<TaskId<'static>, TaskDefinition>,
+        task_definitions: &HashMap<TaskId<'static>, FileHashInputs>,
         repo_root: &AbsoluteSystemPath,
         telemetry: &GenericEventBuilder,
     ) -> Result<PackageInputsHashes, Error> {
@@ -109,10 +128,7 @@ impl PackageInputsHashes {
                     Err(err) => return Some(Err(err)),
                 };
 
-                let package_path = pkg
-                    .package_json_path
-                    .parent()
-                    .unwrap_or_else(|| AnchoredSystemPath::new("").unwrap());
+                let package_path = pkg.package_path();
 
                 let scm_telemetry = package_task_event.child();
                 let mut hash_object = match scm.get_package_file_hashes(
