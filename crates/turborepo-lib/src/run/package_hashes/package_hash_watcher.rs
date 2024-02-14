@@ -213,17 +213,33 @@ impl Subscriber {
         let (package_hasher_tx, mut package_hasher_rx) = OptionalWatch::new();
         let package_hasher_tx = Arc::new(package_hasher_tx);
 
+        let (task_hashes_tx, mut task_hashes_rx) = OptionalWatch::new();
+        let task_hashes_tx = Arc::new(task_hashes_tx);
+
         let scm = SCM::new(&self.repo_root);
 
-        let handle_package_list_changes = {
+        let update_package_graph_fut = {
             let repo_root = self.repo_root.clone();
             let root_package_json_rx = root_package_json_rx.clone();
-            handle_package_list_changes(
-                packages_rx,
-                self.package_watcher,
+            update_package_graph(
                 repo_root,
+                self.package_watcher,
+                packages_rx,
                 root_package_json_rx,
                 package_graph_tx.clone(),
+            )
+        };
+
+        let update_package_hasher_fut = {
+            let repo_root = self.repo_root.clone();
+            update_package_hasher(
+                scm.clone(),
+                repo_root,
+                root_turbo_json_rx.clone(),
+                package_graph_rx.clone(),
+                task_hashes_rx.clone(),
+                task_hashes_tx.clone(),
+                package_hasher_tx.clone(),
             )
         };
 
@@ -269,7 +285,20 @@ impl Subscriber {
                             .unwrap();
 
                         for x in hashes.hashes {
-                            task_hashes.insert(x.0, x.1);
+                            let existing = task_hashes.insert(x.0.clone(), x.1.clone());
+                            if let Some(existing) = existing {
+                                if existing != x.1 {
+                                    // this should hopefully never happen. if calculating hashes for
+                                    // a task gives a different result than what we have stored, we
+                                    // have done a bad job of tracking the state of the world
+                                    tracing::error!(
+                                        "hash for task {} changed from {} to {}",
+                                        x.0,
+                                        existing,
+                                        x.1
+                                    );
+                                }
+                            }
                         }
                     }
                     Either::Left(Err(_) | Ok(Err(_))) => break,
@@ -287,47 +316,76 @@ impl Subscriber {
             _ = handle_file_update => {
                 tracing::debug!("closing due to file watcher stopping");
             }
-            _ = handle_package_list_changes => {
+            _ = update_package_graph_fut => {
                 tracing::debug!("closing due to package list watcher stopping");
+            }
+            _ = update_package_hasher_fut => {
+                tracing::debug!("closing due to package hasher stopping");
             }
         }
     }
 }
 
+/// When the list of packages changes, or the root package json chagnes, we need
+/// to update the package graph so that the change detector can detect the
+/// correct changes
 #[tracing::instrument(skip(
     packages_rx,
     package_watcher,
     repo_root,
-    root_package_json,
+    root_package_json_rx,
     package_graph_tx
 ))]
-/// When the list of packages changes, we need to update the package graph
-/// so that the change detector can detect the correct changes
-async fn handle_package_list_changes(
-    mut packages_rx: CookiedOptionalWatch<HashMap<PackageName, WorkspaceData>, ()>,
-    package_watcher: Arc<PackageWatcher>,
+async fn update_package_graph(
     repo_root: AbsoluteSystemPathBuf,
-    mut root_package_json: OptionalWatch<PackageJson>,
+    package_watcher: Arc<PackageWatcher>,
+    mut packages_rx: CookiedOptionalWatch<HashMap<WorkspaceName, WorkspaceData>, ()>,
+    mut root_package_json_rx: OptionalWatch<PackageJson>,
     package_graph_tx: Arc<watch::Sender<Option<PackageGraph>>>,
 ) {
     // we could would use a while let here, but watcher::Ref cannot be held across
     // an await so we use a loop and do the transformation in its own scope to keep
     // the borrow checker happy
     loop {
-        let _workspaces = match packages_rx.get_change().await {
-            Ok(workspaces) => (),
-            Err(_) => {
-                tracing::debug!("no package list, stopping");
-                break;
-            }
+        let changed = select! {
+            out = packages_rx.get_change() => {
+                let Ok(packages) = out else {
+                    // we will never get another update, so we should stop
+                    tracing::debug!("no package list, stopping");
+                    break;
+                };
+
+                Either::Left(packages.to_owned())
+            },
+            out = root_package_json_rx.get_change() => {
+                let Ok(root_package_json) = out else {
+                    // we will never get another update, so we should stop
+                    tracing::debug!("no root package json, stopping");
+                    break;
+                };
+
+                Either::Right(root_package_json.to_owned())
+            },
         };
 
-        let root_package_json = match root_package_json.get().await {
-            Ok(root_package_json) => root_package_json.to_owned(),
-            Err(_) => {
-                tracing::debug!("no root package json, stopping");
-                break;
-            }
+        let (packages, root_package_json) = match changed {
+            Either::Left(packages) => (
+                packages,
+                root_package_json_rx
+                    .get_immediate()
+                    .unwrap()
+                    .unwrap()
+                    .to_owned(),
+            ),
+            Either::Right(root_package_json) => (
+                packages_rx
+                    .get_immediate()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_owned(),
+                root_package_json,
+            ),
         };
 
         tracing::debug!("packages changed, rebuilding package graph");
@@ -390,77 +448,26 @@ async fn handle_file_event(
             // - recalculate the hashes for the task ids we are tracking
             if turbo_json_changed {
                 root_turbo_json_tx.send(None);
-                package_hasher_tx.send(None);
 
-                let package_hasher = {
-                    let Some(Ok(root_package_json)) = root_package_json_rx.get_immediate() else {
-                        tracing::error!(
-                            "turbo json changed, but we have no root package json, clearing \
-                             downstream state"
-                        );
-                        return;
-                    };
-
-                    let root_turbo_json = {
-                        TurboJson::load(
-                            repo_root,
-                            AnchoredSystemPath::empty(),
-                            &root_package_json,
-                            false,
-                        )
-                        .unwrap()
-                    };
-
-                    root_turbo_json_tx.send(Some(root_turbo_json.clone()));
-
-                    let Some(Ok(package_graph)) = package_graph_rx.get_immediate() else {
-                        tracing::error!(
-                            "turbo json changed, but we have no package graph, clearing \
-                             downstream state"
-                        );
-                        return;
-                    };
-
-                    let scm = SCM::new(&repo_root);
-
-                    let task_definitions = create_task_defitions(
-                        repo_root.to_owned(),
-                        root_turbo_json.clone(),
-                        &scm,
-                        &*package_graph,
+                let Some(Ok(root_package_json)) = root_package_json_rx.get_immediate() else {
+                    tracing::error!(
+                        "turbo json changed, but we have no root package json, clearing \
+                         downstream state"
                     );
-
-                    LocalPackageHashes::new(
-                        scm,
-                        package_graph
-                            .workspaces()
-                            .map(|(k, v)| (k.to_owned(), v.package_json_path.to_owned()))
-                            .collect(),
-                        task_definitions
-                            .into_iter()
-                            .map(|(k, v)| (k, v.into()))
-                            .collect(),
-                        repo_root.to_owned(),
-                    )
+                    return;
                 };
 
-                let hashes = package_hasher
-                    .calculate_hashes(
-                        Default::default(),
-                        task_hashes
-                            .keys()
-                            .cloned()
-                            .map(|id| TaskNode::Task(id))
-                            .collect(),
+                let root_turbo_json = {
+                    TurboJson::load(
+                        repo_root,
+                        AnchoredSystemPath::empty(),
+                        &root_package_json,
+                        false,
                     )
-                    .await
-                    .unwrap();
+                    .unwrap()
+                };
 
-                for x in hashes.hashes {
-                    task_hashes.insert(x.0, x.1);
-                }
-
-                package_hasher_tx.send(Some(package_hasher));
+                root_turbo_json_tx.send(Some(root_turbo_json.clone()));
             }
 
             let package_json_change = event
@@ -585,10 +592,129 @@ async fn handle_file_event(
     }
 }
 
-fn create_task_defitions(
+/// When the list of packages changes, or the root package json chagnes, we need
+/// to update the package hasher so that it knows the correct globs and task
+/// definitions. Additionally, we need to replace all the task ids that we are
+/// tracking with the new ones.
+async fn update_package_hasher(
+    scm: SCM,
+    repo_root: AbsoluteSystemPathBuf,
+    mut root_turbo_json_rx: OptionalWatch<TurboJson>,
+    mut package_graph_rx: OptionalWatch<PackageGraph>,
+    mut task_hashes_rx: OptionalWatch<HashMap<TaskId<'static>, String>>,
+    task_hashes_tx: Arc<watch::Sender<Option<HashMap<TaskId<'static>, String>>>>,
+    package_hasher_tx: Arc<watch::Sender<Option<LocalPackageHashes>>>,
+) {
+    loop {
+        let package_hasher = {
+            // we don't actually care about task hashes changing, it is down
+            // stream data that we need to update, we just need to read it to
+            // be able to update
+            let (mut root_turbo_json, mut package_graph) = select! {
+                root_turbo_json = root_turbo_json_rx.get_change() => {
+                    if let Ok(root_turbo_json) = root_turbo_json {
+                        (Some((*root_turbo_json).to_owned()), None)
+                    } else {
+                        tracing::debug!("no root turbo json, exiting");
+                        break;
+                    }
+                }
+                package_graph = package_graph_rx.get_change() => {
+                    if let Ok(package_graph) = package_graph {
+                        (None, Some(package_graph))
+                    } else {
+                        tracing::debug!("no package graph, exiting");
+                        break;
+                    }
+                }
+            };
+
+            if root_turbo_json.is_none() {
+                root_turbo_json = match root_turbo_json_rx.get_immediate() {
+                    Some(Ok(root_turbo_json)) => Some(root_turbo_json.to_owned()),
+                    None | Some(Err(_)) => {
+                        tracing::error!(
+                            "turbo json changed, but we have no root turbo json, clearing \
+                             downstream state"
+                        );
+                        return;
+                    }
+                }
+            };
+
+            if package_graph.is_none() {
+                drop(package_graph);
+                package_graph = match package_graph_rx.get_immediate() {
+                    Some(Ok(package_graph)) => Some(package_graph),
+                    None | Some(Err(_)) => {
+                        tracing::error!(
+                            "turbo json changed, but we have no package graph, clearing \
+                             downstream state"
+                        );
+                        return;
+                    }
+                }
+            };
+
+            // we validate above that these are all Some
+            let (root_turbo_json, package_graph) =
+                (root_turbo_json.unwrap(), package_graph.unwrap());
+
+            let task_definitions = create_task_definitions(
+                repo_root.to_owned(),
+                root_turbo_json.clone(),
+                &*package_graph,
+            );
+
+            let package_hasher = LocalPackageHashes::new(
+                scm.clone(),
+                package_graph
+                    .workspaces()
+                    .map(|(k, v)| (k.to_owned(), v.package_json_path.to_owned()))
+                    .collect(),
+                task_definitions
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into()))
+                    .collect(),
+                repo_root.to_owned(),
+            );
+
+            package_hasher
+        };
+
+        // here, if the task_hashes_rx is empty, we can just exit
+        let mut task_hashes = match task_hashes_rx.get_immediate() {
+            Some(Ok(task_hashes)) => task_hashes
+                .keys()
+                .cloned()
+                .map(|id| TaskNode::Task(id))
+                .collect(),
+            None | Some(Err(_)) => {
+                tracing::debug!("no task hashes to update");
+                package_hasher_tx.send(Some(package_hasher));
+                return;
+            }
+        };
+
+        task_hashes_tx.send(None);
+
+        let Ok(hashes) = package_hasher
+            .calculate_hashes(Default::default(), task_hashes)
+            .await
+        else {
+            // if we can't calculate the hashes, leave the task hasher empty
+            return;
+        };
+
+        task_hashes_tx.send(Some(hashes.hashes));
+        package_hasher_tx.send(Some(package_hasher));
+    }
+}
+
+fn create_task_definitions(
     repo_root: AbsoluteSystemPathBuf,
     root_turbo_json: TurboJson,
-    scm: &SCM,
+
     workspaces: &PackageGraph,
 ) -> HashMap<TaskId<'static>, TaskDefinition> {
     let mut task_definitions = TaskDefinitionBuilder::new(repo_root.clone(), workspaces, false);
