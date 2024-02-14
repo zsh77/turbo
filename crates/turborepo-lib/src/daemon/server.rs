@@ -42,15 +42,13 @@ use turborepo_filewatch::{
 use turborepo_repository::discovery::{
     LocalPackageDiscoveryBuilder, PackageDiscovery, PackageDiscoveryBuilder,
 };
-use turborepo_scm::SCM;
 
 use super::{bump_timeout::BumpTimeout, endpoint::SocketOpenError, proto, Paths};
 use crate::{
     daemon::{bump_timeout_layer::BumpTimeoutLayer, endpoint::listen_socket},
     run::{
         package_hashes::{
-            package_hash_watcher::PackageHashWatcher, watch::WatchingPackageHasher,
-            LocalPackageHasherBuilder, LocalPackageHashes, PackageHasher,
+            package_hash_watcher::PackageHashWatcher, watch::WatchingPackageHasher, PackageHasher,
         },
         task_id::TaskId,
     },

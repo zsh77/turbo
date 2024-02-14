@@ -1,4 +1,4 @@
-use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPathBuf};
+use turbopath::AnchoredSystemPathBuf;
 use turborepo_repository::discovery::{DiscoveryResponse, Error, PackageDiscovery, WorkspaceData};
 
 use crate::daemon::{proto::PackageManager, DaemonClient};

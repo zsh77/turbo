@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use itertools::Itertools;
 use miette::Diagnostic;
-use turbopath::{
-    AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf,
-};
+use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPathBuf};
 use turborepo_graph_utils as graph;
 use turborepo_repository::{
     package_graph::{PackageGraph, PackageName, PackageNode, ROOT_PKG_NAME},

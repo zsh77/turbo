@@ -12,9 +12,7 @@ use super::{
     proto::DiscoverPackagesResponse,
     Paths,
 };
-use crate::{
-    daemon::proto, engine::TaskNode, globwatcher::HashGlobSetupError, run::task_id::TaskId,
-};
+use crate::{daemon::proto, engine::TaskNode, globwatcher::HashGlobSetupError};
 
 #[derive(Debug, Clone)]
 pub struct DaemonClient<T> {

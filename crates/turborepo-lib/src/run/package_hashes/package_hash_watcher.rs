@@ -5,22 +5,20 @@ use std::{
     time::Instant,
 };
 
-use futures::{future::Either, stream, Stream};
+use futures::future::Either;
 use itertools::Itertools;
 use notify::{Event, EventKind};
 use serde_json::Value;
 use tokio::{
     select,
     sync::{broadcast, oneshot, watch},
-    time::error::Elapsed,
 };
 use turbopath::{
     AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf,
-    RelativeUnixPathBuf,
 };
 use turborepo_filewatch::{
     cookies::{CookieError, CookieRegister, CookiedOptionalWatch},
-    package_watcher::{self, PackageManagerState, PackageWatcher, WatchingPackageDiscovery},
+    package_watcher::{PackageManagerState, PackageWatcher},
     NotifyError, OptionalWatch,
 };
 use turborepo_repository::{
@@ -32,10 +30,10 @@ use turborepo_repository::{
 use turborepo_scm::SCM;
 
 use crate::{
-    engine::{self, Engine, PackageLookup, TaskDefinitionBuilder, TaskNode},
+    engine::{self, PackageLookup, TaskDefinitionBuilder, TaskNode},
     run::{
         package_hashes::{LocalPackageHashes, PackageHasher},
-        task_id::{TaskId, TaskName},
+        task_id::TaskId,
     },
     task_graph::TaskDefinition,
     task_hash::PackageInputsHashes,
@@ -113,15 +111,15 @@ impl PackageHashWatcher {
         packages.get().await.map(|i| i.to_owned())
     }
 
-    pub async fn track(
-        &self,
-        tasks: Vec<TaskNode>,
-    ) -> Result<PackageInputsHashes, watch::error::RecvError> {
+    pub async fn track(&self, tasks: Vec<TaskNode>) -> Result<PackageInputsHashes, TrackError> {
         // in here we add the tasks to the file watcher
         let start = Instant::now();
-        self.sub_tx.send(SubscriberCommand::Update(tasks)).await;
+        self.sub_tx
+            .send(SubscriberCommand::Update(tasks))
+            .await
+            .map_err(|_| TrackError::Send)?;
         let mut packages = self.packages.clone();
-        let packages = packages.get_change().await.unwrap();
+        let packages = packages.get_change().await.map_err(|_| TrackError::Recv)?;
         tracing::debug!(
             "calculated {} in {}ms",
             (*packages).0.len(),
@@ -129,6 +127,11 @@ impl PackageHashWatcher {
         );
         Ok(PackageInputsHashes::default())
     }
+}
+
+pub enum TrackError {
+    Send,
+    Recv,
 }
 
 struct Subscriber {
@@ -208,13 +211,13 @@ impl Subscriber {
         let (root_package_json_tx, mut root_package_json_rx) = OptionalWatch::new();
         let root_package_json_tx = Arc::new(root_package_json_tx);
 
-        let (root_turbo_json_tx, mut root_turbo_json_rx) = OptionalWatch::new();
+        let (root_turbo_json_tx, root_turbo_json_rx) = OptionalWatch::new();
         let root_turbo_json_tx = Arc::new(root_turbo_json_tx);
 
         let (package_hasher_tx, mut package_hasher_rx) = OptionalWatch::new();
         let package_hasher_tx = Arc::new(package_hasher_tx);
 
-        let (task_hashes_tx, mut task_hashes_rx) = OptionalWatch::new();
+        let (task_hashes_tx, task_hashes_rx) = OptionalWatch::new();
         let task_hashes_tx = Arc::new(task_hashes_tx);
 
         let scm = SCM::new(&self.repo_root);
@@ -449,32 +452,30 @@ async fn handle_file_event(
 
             let turbo_json_changed = event.paths.iter().any(|p| p.ends_with("turbo.json"));
 
-            // - reload root turbo json
-            // - create a new task def builder
-            // - add all the task ids
-            // - recalculate the hashes for the task ids we are tracking
             if turbo_json_changed {
-                root_turbo_json_tx.send(None);
+                // no use in updating the turbo json if there are no listeners
+                if let Ok(_) = root_turbo_json_tx.send(None) {
+                    let Some(Ok(root_package_json)) = root_package_json_rx.get_immediate() else {
+                        tracing::error!(
+                            "turbo json changed, but we have no root package json, clearing \
+                             downstream state"
+                        );
+                        return;
+                    };
 
-                let Some(Ok(root_package_json)) = root_package_json_rx.get_immediate() else {
-                    tracing::error!(
-                        "turbo json changed, but we have no root package json, clearing \
-                         downstream state"
-                    );
-                    return;
-                };
+                    let root_turbo_json = {
+                        TurboJson::load(
+                            repo_root,
+                            AnchoredSystemPath::empty(),
+                            &root_package_json,
+                            false,
+                        )
+                        .unwrap()
+                    };
 
-                let root_turbo_json = {
-                    TurboJson::load(
-                        repo_root,
-                        AnchoredSystemPath::empty(),
-                        &root_package_json,
-                        false,
-                    )
-                    .unwrap()
-                };
-
-                root_turbo_json_tx.send(Some(root_turbo_json.clone()));
+                    // we don't really need to exit here, since other watchers will terminate for us
+                    _ = root_turbo_json_tx.send(Some(root_turbo_json.clone()));
+                }
             }
 
             let package_json_change = event
@@ -505,7 +506,8 @@ async fn handle_file_event(
                     }
                 };
 
-                root_package_json_tx.send(Some(root_package_json));
+                // we don't really need to exit here, since other watchers will terminate for us
+                _ = root_package_json_tx.send(Some(root_package_json));
             }
 
             let changed_packages = {
@@ -603,6 +605,7 @@ async fn handle_file_event(
 /// to update the package hasher so that it knows the correct globs and task
 /// definitions. Additionally, we need to replace all the task ids that we are
 /// tracking with the new ones.
+#[tracing::instrument(skip_all)]
 async fn update_package_hasher(
     scm: SCM,
     repo_root: AbsoluteSystemPathBuf,
@@ -696,31 +699,53 @@ async fn update_package_hasher(
         };
 
         // here, if the task_hashes_rx is empty, we can just exit
-        let mut task_hashes = match task_hashes_rx.get_immediate() {
-            Some(Ok(task_hashes)) => task_hashes
-                .keys()
-                .cloned()
-                .map(|id| TaskNode::Task(id))
-                .collect(),
+        let task_hashes = match task_hashes_rx.get_immediate() {
+            Some(Ok(task_hashes)) => Some(
+                task_hashes
+                    .keys()
+                    .cloned()
+                    .map(|id| TaskNode::Task(id))
+                    .collect(),
+            ),
             None | Some(Err(_)) => {
                 tracing::debug!("no task hashes to update");
-                package_hasher_tx.send(Some(package_hasher));
-                return;
+                None
             }
         };
 
-        task_hashes_tx.send(None);
+        let (package_hasher, hashes) = if let Some(task_hashes) = task_hashes {
+            // no one is listening (nor ever will be), so we can just exit
+            if task_hashes_tx.send(None).is_err() {
+                tracing::debug!("no task hashes to update, exiting");
+                return;
+            }
 
-        let Ok(hashes) = package_hasher
-            .calculate_hashes(Default::default(), task_hashes)
-            .await
-        else {
-            // if we can't calculate the hashes, leave the task hasher empty
-            return;
+            let Ok(hashes) = package_hasher
+                .calculate_hashes(Default::default(), task_hashes)
+                .await
+            else {
+                // if we can't calculate the hashes, leave the task hasher empty
+                return;
+            };
+
+            (Some(package_hasher), Some(hashes.hashes))
+        } else {
+            (None, None)
         };
 
-        task_hashes_tx.send(Some(hashes.hashes));
-        package_hasher_tx.send(Some(package_hasher));
+        // if either of these fail, then the thing that is processing hash updates
+        // has stopped, or the thing that is serving the task hashes has stopped,
+        // so we can just exit
+
+        if task_hashes_tx.send(hashes).is_err() {
+            tracing::debug!("no task hashes to update, exiting");
+            return;
+        }
+
+        if package_hasher_tx.send(package_hasher).is_err() {
+            tracing::debug!("nobody needing a package hasher, exiting");
+            return;
+        }
     }
 }
 

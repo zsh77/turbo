@@ -19,7 +19,6 @@ use crate::{
     config,
     engine::{EngineBuilder, TaskNode},
     run::error::Error,
-    task_graph::TaskDefinition,
     task_hash::{FileHashInputs, PackageInputsHashes},
     turbo_json::TurboJson,
     DaemonClient,
@@ -197,12 +196,11 @@ pub struct DaemonPackageHasher<C> {
 impl<C: Clone + Send + Sync> PackageHasher for DaemonPackageHasher<C> {
     async fn calculate_hashes(
         &self,
-        run_telemetry: GenericEventBuilder,
+        _run_telemetry: GenericEventBuilder,
         tasks: Vec<TaskNode>,
     ) -> Result<PackageInputsHashes, Error> {
         // clone to avoid using a mutex or a mutable reference
-        let mut daemon = self.daemon.clone();
-        let package_hashes = daemon.discover_package_hashes(tasks).await;
+        let package_hashes = self.daemon.discover_package_hashes(tasks).await;
 
         package_hashes
             .map(|resp| {

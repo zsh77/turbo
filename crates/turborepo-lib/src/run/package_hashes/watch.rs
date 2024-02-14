@@ -1,16 +1,13 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::time::Duration;
 
-use futures::{FutureExt, StreamExt};
 use tokio::{sync::watch::error::RecvError, time::error::Elapsed};
-use turborepo_filewatch::OptionalWatch;
 use turborepo_repository::discovery::PackageDiscovery;
 use turborepo_telemetry::events::generic::GenericEventBuilder;
 
-use super::PackageHasherBuilder;
 use crate::{
     daemon::FileWatching,
     engine::TaskNode,
-    run::{package_hashes::PackageHasher, task_id::TaskId, Error},
+    run::{package_hashes::PackageHasher, Error},
     task_hash::PackageInputsHashes,
 };
 
@@ -48,12 +45,10 @@ impl<PD: PackageDiscovery + Send + Sync> PackageHasher for WatchingPackageHasher
         _run_telemetry: GenericEventBuilder,
         tasks: Vec<TaskNode>,
     ) -> Result<PackageInputsHashes, Error> {
-        let data = self
-            .file_watching
+        self.file_watching
             .package_hash_watcher
             .track(tasks)
             .await
-            .unwrap();
-        Ok(data)
+            .map_err(|_| Error::PackageHashingUnavailable)
     }
 }
