@@ -69,7 +69,7 @@ pub struct PackageInputsHashes {
 
 /// The set of data required from the TaskDefinition to calculate the hash of a
 /// task's inputs. This is guaranteed to be free of runtime config.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct FileHashInputs {
     inputs: Vec<String>,
     dot_env: Option<Vec<turbopath::RelativeUnixPathBuf>>,

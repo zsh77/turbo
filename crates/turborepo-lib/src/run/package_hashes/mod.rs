@@ -141,6 +141,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct LocalPackageHashes {
     scm: SCM,
     workspaces: HashMap<PackageName, PackageInfo>,

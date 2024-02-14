@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     sync::Arc,
+    time::Instant,
 };
 
 use futures::{future::Either, stream, Stream};
@@ -36,6 +37,7 @@ use crate::{
         package_hashes::{LocalPackageHashes, PackageHasher},
         task_id::{TaskId, TaskName},
     },
+    task_graph::TaskDefinition,
     task_hash::PackageInputsHashes,
     turbo_json::TurboJson,
 };
@@ -102,18 +104,6 @@ impl PackageHashWatcher {
         }
     }
 
-    /// general algorithm:
-    /// - watch turbo.json
-    ///
-    /// - discover all the packages / tasks in a project and subscribe to
-    ///   changes
-    /// - if the list changes add a new watch for that package
-    ///
-    /// - for all packages in the workspace
-    ///   - watch for changes to the list of scripts in the package json
-    ///   - get all the globs for all those scripts
-    ///   - walk and hash the combined files
-    ///   - store those hashes for querying
     pub fn subscribe(&self) -> broadcast::Receiver<HashUpdate> {
         self.updates.resubscribe()
     }
@@ -128,10 +118,15 @@ impl PackageHashWatcher {
         tasks: Vec<TaskNode>,
     ) -> Result<PackageInputsHashes, watch::error::RecvError> {
         // in here we add the tasks to the file watcher
+        let start = Instant::now();
         self.sub_tx.send(SubscriberCommand::Update(tasks)).await;
         let mut packages = self.packages.clone();
         let packages = packages.get_change().await.unwrap();
-        tracing::trace!("{:?}", *packages);
+        tracing::debug!(
+            "calculated {} in {}ms",
+            (*packages).0.len(),
+            Instant::now().duration_since(start).as_millis()
+        );
         Ok(PackageInputsHashes::default())
     }
 }
@@ -209,30 +204,25 @@ impl Subscriber {
         let (package_graph_tx, mut package_graph_rx) = OptionalWatch::new();
         let package_graph_tx = Arc::new(package_graph_tx);
 
-        let root_package_json = self.repo_root.join_component("package.json");
-        let root_package_json = File::open(root_package_json).unwrap();
+        let (root_package_json_tx, mut root_package_json_rx) = OptionalWatch::new();
+        let root_package_json_tx = Arc::new(root_package_json_tx);
 
-        let root_package_json = serde_json::from_reader::<_, Value>(root_package_json).unwrap();
-        let root_package_json = PackageJson::from_value(root_package_json).unwrap();
+        let (root_turbo_json_tx, mut root_turbo_json_rx) = OptionalWatch::new();
+        let root_turbo_json_tx = Arc::new(root_turbo_json_tx);
+
+        let (package_hasher_tx, mut package_hasher_rx) = OptionalWatch::new();
+        let package_hasher_tx = Arc::new(package_hasher_tx);
 
         let scm = SCM::new(&self.repo_root);
 
-        let fallback = generate_local_package_hasher(
-            &self.repo_root,
-            &root_package_json,
-            &scm,
-            self.package_watcher.clone(),
-            self.package_watcher.watch(),
-        )
-        .await;
-
         let handle_package_list_changes = {
             let repo_root = self.repo_root.clone();
+            let root_package_json_rx = root_package_json_rx.clone();
             handle_package_list_changes(
                 packages_rx,
                 self.package_watcher,
                 repo_root,
-                root_package_json,
+                root_package_json_rx,
                 package_graph_tx.clone(),
             )
         };
@@ -253,16 +243,27 @@ impl Subscriber {
                     Either::Left(Ok(Ok(event))) => {
                         handle_file_event(
                             event,
-                            &fallback,
                             &mut task_hashes,
                             &mut package_graph_rx,
+                            &mut root_package_json_rx,
+                            &mut package_hasher_rx,
+                            root_package_json_tx.clone(),
+                            root_turbo_json_tx.clone(),
+                            package_hasher_tx.clone(),
                             &self.cookie_tx,
                             &self.repo_root,
                         )
                         .await;
                     }
                     Either::Right(Some(SubscriberCommand::Update(tasks))) => {
-                        let hashes = fallback
+                        let hasher = match package_hasher_rx.get_immediate() {
+                            Some(Ok(hasher)) => hasher.to_owned(),
+                            None | Some(Err(_)) => {
+                                tracing::error!("no package graph, exiting");
+                                break;
+                            }
+                        };
+                        let hashes = hasher
                             .calculate_hashes(Default::default(), tasks)
                             .await
                             .unwrap();
@@ -306,7 +307,7 @@ async fn handle_package_list_changes(
     mut packages_rx: CookiedOptionalWatch<HashMap<PackageName, WorkspaceData>, ()>,
     package_watcher: Arc<PackageWatcher>,
     repo_root: AbsoluteSystemPathBuf,
-    root_package_json: PackageJson,
+    mut root_package_json: OptionalWatch<PackageJson>,
     package_graph_tx: Arc<watch::Sender<Option<PackageGraph>>>,
 ) {
     // we could would use a while let here, but watcher::Ref cannot be held across
@@ -317,6 +318,14 @@ async fn handle_package_list_changes(
             Ok(workspaces) => (),
             Err(_) => {
                 tracing::debug!("no package list, stopping");
+                break;
+            }
+        };
+
+        let root_package_json = match root_package_json.get().await {
+            Ok(root_package_json) => root_package_json.to_owned(),
+            Err(_) => {
+                tracing::debug!("no root package json, stopping");
                 break;
             }
         };
@@ -344,15 +353,28 @@ async fn handle_package_list_changes(
     }
 }
 
-#[tracing::instrument(skip(event, fallback, task_hashes, package_graph_rx, cookie_tx, repo_root))]
+/// A file event can mean a few things:
+///
+/// - a file in a package was changed. we need to recalculate the hashes for the
+///   tasks that depend on that package
+/// - the root package json was changed. we need to recalculate the hashes for
+///   all the tasks, using the new package graph / turbo json
+/// - the turbo json was changed. we need to recalculate the hashes for all the
+///   tasks, using the new turbo json
+#[tracing::instrument(skip_all)]
 async fn handle_file_event(
     event: Event,
-    fallback: &LocalPackageHashes,
     task_hashes: &mut HashMap<TaskId<'static>, String>,
     package_graph_rx: &mut OptionalWatch<PackageGraph>,
+    root_package_json_rx: &mut OptionalWatch<PackageJson>,
+    package_hasher_rx: &mut OptionalWatch<LocalPackageHashes>,
+    root_package_json_tx: Arc<watch::Sender<Option<PackageJson>>>,
+    root_turbo_json_tx: Arc<watch::Sender<Option<TurboJson>>>,
+    package_hasher_tx: Arc<watch::Sender<Option<LocalPackageHashes>>>,
     cookie_tx: &CookieRegister,
     repo_root: &AbsoluteSystemPath,
 ) {
+    let root_package_json_path = repo_root.join_component("package.json");
     match event.kind {
         EventKind::Any | EventKind::Access(_) | EventKind::Other => {
             // no-op
@@ -362,12 +384,114 @@ async fn handle_file_event(
 
             let turbo_json_changed = event.paths.iter().any(|p| p.ends_with("turbo.json"));
 
+            // - reload root turbo json
+            // - create a new task def builder
+            // - add all the task ids
+            // - recalculate the hashes for the task ids we are tracking
             if turbo_json_changed {
-                // reload root turbo json
-                // create a new task def builder
-                // add all the task ids
-                // recalculate the hashes for the task ids we are
-                // tracking
+                root_turbo_json_tx.send(None);
+                package_hasher_tx.send(None);
+
+                let package_hasher = {
+                    let Some(Ok(root_package_json)) = root_package_json_rx.get_immediate() else {
+                        tracing::error!(
+                            "turbo json changed, but we have no root package json, clearing \
+                             downstream state"
+                        );
+                        return;
+                    };
+
+                    let root_turbo_json = {
+                        TurboJson::load(
+                            repo_root,
+                            AnchoredSystemPath::empty(),
+                            &root_package_json,
+                            false,
+                        )
+                        .unwrap()
+                    };
+
+                    root_turbo_json_tx.send(Some(root_turbo_json.clone()));
+
+                    let Some(Ok(package_graph)) = package_graph_rx.get_immediate() else {
+                        tracing::error!(
+                            "turbo json changed, but we have no package graph, clearing \
+                             downstream state"
+                        );
+                        return;
+                    };
+
+                    let scm = SCM::new(&repo_root);
+
+                    let task_definitions = create_task_defitions(
+                        repo_root.to_owned(),
+                        root_turbo_json.clone(),
+                        &scm,
+                        &*package_graph,
+                    );
+
+                    LocalPackageHashes::new(
+                        scm,
+                        package_graph
+                            .workspaces()
+                            .map(|(k, v)| (k.to_owned(), v.package_json_path.to_owned()))
+                            .collect(),
+                        task_definitions
+                            .into_iter()
+                            .map(|(k, v)| (k, v.into()))
+                            .collect(),
+                        repo_root.to_owned(),
+                    )
+                };
+
+                let hashes = package_hasher
+                    .calculate_hashes(
+                        Default::default(),
+                        task_hashes
+                            .keys()
+                            .cloned()
+                            .map(|id| TaskNode::Task(id))
+                            .collect(),
+                    )
+                    .await
+                    .unwrap();
+
+                for x in hashes.hashes {
+                    task_hashes.insert(x.0, x.1);
+                }
+
+                package_hasher_tx.send(Some(package_hasher));
+            }
+
+            let package_json_change = event
+                .paths
+                .iter()
+                .find(|p| p.as_path() == root_package_json_path.as_std_path());
+
+            if let Some(root_package_json_path) = package_json_change {
+                let root_package_json = {
+                    let Ok(root_package_json) = File::open(root_package_json_path) else {
+                        tracing::error!("unable to open root package json, exiting");
+                        return;
+                    };
+
+                    let Ok(root_package_json) =
+                        serde_json::from_reader::<_, Value>(root_package_json)
+                    else {
+                        tracing::error!("unable to parse root package json, exiting");
+                        return;
+                    };
+
+                    match PackageJson::from_value(root_package_json) {
+                        Ok(root_package_json) => root_package_json,
+                        Err(e) => {
+                            tracing::error!("unable to parse root package json: {}, exiting", e);
+                            return;
+                        }
+                    }
+                };
+
+                root_package_json_tx.send(Some(root_package_json));
             }
 
             let changed_packages = {
@@ -420,7 +544,15 @@ async fn handle_file_event(
                 changed_tasks.iter().map(|t| t.to_string()).join(", ")
             );
 
-            let hashes = fallback
+            let hasher = match package_hasher_rx.get_immediate() {
+                Some(Ok(hasher)) => hasher.to_owned(),
+                None | Some(Err(_)) => {
+                    tracing::error!("no package graph, exiting");
+                    return;
+                }
+            };
+
+            let hashes = hasher
                 .calculate_hashes(
                     Default::default(),
                     changed_tasks
@@ -453,43 +585,22 @@ async fn handle_file_event(
     }
 }
 
-/// When any of the following chnage, we need a new local
-/// package hasher:
-///
-/// - the list of packages
-/// - the root package json
-/// - the turbo json
-async fn generate_local_package_hasher(
-    repo_root: &AbsoluteSystemPathBuf,
-    root_package_json: &PackageJson,
+fn create_task_defitions(
+    repo_root: AbsoluteSystemPathBuf,
+    root_turbo_json: TurboJson,
     scm: &SCM,
-    package_watcher: Arc<PackageWatcher>,
-    mut workspaces: CookiedOptionalWatch<HashMap<PackageName, WorkspaceData>, ()>,
-) -> LocalPackageHashes {
-    let root_turbo_json = TurboJson::load(
-        repo_root,
-        AnchoredSystemPath::empty(),
-        root_package_json,
-        false,
-    )
-    .unwrap();
-
-    let workspaces = { workspaces.get().await.unwrap().to_owned() };
-
-    let mut task_definitions = TaskDefinitionBuilder::new(
-        repo_root.clone(),
-        WorkspaceLookup(workspaces.clone()),
-        false,
-    );
+    workspaces: &PackageGraph,
+) -> HashMap<TaskId<'static>, TaskDefinition> {
+    let mut task_definitions = TaskDefinitionBuilder::new(repo_root.clone(), workspaces, false);
 
     let mut turbo_jsons = [(PackageName::Root, root_turbo_json.clone())]
         .into_iter()
         .collect();
 
     for task_id in workspaces
-        .keys()
+        .workspaces()
         .cartesian_product(root_turbo_json.pipeline.keys())
-        .map(|(package, task)| {
+        .map(|((package, _), task)| {
             task.task_id()
                 .unwrap_or_else(|| TaskId::new(package.as_ref(), task.task()))
                 .into_owned()
@@ -499,17 +610,5 @@ async fn generate_local_package_hasher(
         task_definitions.add_task_definition_from(&mut turbo_jsons, &task_id);
     }
 
-    LocalPackageHashes::new(
-        scm.clone(),
-        workspaces
-            .iter()
-            .map(|(k, v)| (k.to_owned(), v.package_json.to_owned()))
-            .collect(),
-        task_definitions
-            .build()
-            .into_iter()
-            .map(|(k, v)| (k, v.into()))
-            .collect(),
-        repo_root.clone(),
-    )
+    task_definitions.build()
 }
