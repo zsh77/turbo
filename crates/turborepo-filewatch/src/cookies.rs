@@ -287,7 +287,7 @@ impl<T, P: CookieReady + Clone> Clone for CookiedOptionalWatch<T, P> {
     }
 }
 
-trait CookieReady {
+pub trait CookieReady {
     async fn ready(&mut self, id: usize);
 }
 

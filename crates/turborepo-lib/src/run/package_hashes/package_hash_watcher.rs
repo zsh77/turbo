@@ -20,19 +20,19 @@ use turbopath::{
 };
 use turborepo_filewatch::{
     cookies::{CookieError, CookieRegister, CookiedOptionalWatch},
-    package_watcher::{self, PackageWatcher, WatchingPackageDiscovery},
+    package_watcher::{self, PackageManagerState, PackageWatcher, WatchingPackageDiscovery},
     NotifyError, OptionalWatch,
 };
 use turborepo_repository::{
     change_mapper::{ChangeMapper, PackageChanges},
-    discovery::WorkspaceData,
+    discovery::{StaticPackageDiscovery, WorkspaceData},
     package_graph::{self, PackageGraph, PackageName},
     package_json::PackageJson,
 };
 use turborepo_scm::SCM;
 
 use crate::{
-    engine::{Engine, PackageLookup, TaskDefinitionBuilder, TaskNode},
+    engine::{self, Engine, PackageLookup, TaskDefinitionBuilder, TaskNode},
     run::{
         package_hashes::{LocalPackageHashes, PackageHasher},
         task_id::{TaskId, TaskName},
@@ -200,6 +200,7 @@ impl Subscriber {
     async fn watch(mut self) {
         tracing::debug!("starting package hash watcher");
         let packages_rx = self.package_watcher.watch();
+        let package_manager_rx = self.package_watcher.watch_manager();
 
         let (package_graph_tx, mut package_graph_rx) = OptionalWatch::new();
         let package_graph_tx = Arc::new(package_graph_tx);
@@ -223,8 +224,8 @@ impl Subscriber {
             let root_package_json_rx = root_package_json_rx.clone();
             update_package_graph(
                 repo_root,
-                self.package_watcher,
                 packages_rx,
+                package_manager_rx,
                 root_package_json_rx,
                 package_graph_tx.clone(),
             )
@@ -232,6 +233,7 @@ impl Subscriber {
 
         let update_package_hasher_fut = {
             let repo_root = self.repo_root.clone();
+            // new unknown tasks need to be hashed the first time
             update_package_hasher(
                 scm.clone(),
                 repo_root,
@@ -265,7 +267,6 @@ impl Subscriber {
                             &mut package_hasher_rx,
                             root_package_json_tx.clone(),
                             root_turbo_json_tx.clone(),
-                            package_hasher_tx.clone(),
                             &self.cookie_tx,
                             &self.repo_root,
                         )
@@ -329,17 +330,11 @@ impl Subscriber {
 /// When the list of packages changes, or the root package json chagnes, we need
 /// to update the package graph so that the change detector can detect the
 /// correct changes
-#[tracing::instrument(skip(
-    packages_rx,
-    package_watcher,
-    repo_root,
-    root_package_json_rx,
-    package_graph_tx
-))]
+#[tracing::instrument(skip_all)]
 async fn update_package_graph(
     repo_root: AbsoluteSystemPathBuf,
-    package_watcher: Arc<PackageWatcher>,
     mut packages_rx: CookiedOptionalWatch<HashMap<WorkspaceName, WorkspaceData>, ()>,
+    mut package_manager_rx: CookiedOptionalWatch<PackageManagerState, ()>,
     mut root_package_json_rx: OptionalWatch<PackageJson>,
     package_graph_tx: Arc<watch::Sender<Option<PackageGraph>>>,
 ) {
@@ -368,6 +363,8 @@ async fn update_package_graph(
             },
         };
 
+        // we don't actually need `packages` here, since we fetch them again
+        // from the package_discovery`
         let (packages, root_package_json) = match changed {
             Either::Left(packages) => (
                 packages,
@@ -388,12 +385,23 @@ async fn update_package_graph(
             ),
         };
 
+        let package_manager = match package_manager_rx.get_immediate().await {
+            Some(Ok(package_manager)) => package_manager.manager,
+            None | Some(Err(_)) => {
+                tracing::error!("no package manager, exiting");
+                break;
+            }
+        };
+
         tracing::debug!("packages changed, rebuilding package graph");
 
         let package_graph = PackageGraph::builder(&repo_root, root_package_json.clone());
 
         let res = match package_graph
-            .with_package_discovery(WatchingPackageDiscovery::new(package_watcher.clone()))
+            .with_package_discovery(StaticPackageDiscovery::new(
+                packages.into_values().collect(),
+                package_manager,
+            ))
             .build()
             .await
         {
@@ -428,7 +436,6 @@ async fn handle_file_event(
     package_hasher_rx: &mut OptionalWatch<LocalPackageHashes>,
     root_package_json_tx: Arc<watch::Sender<Option<PackageJson>>>,
     root_turbo_json_tx: Arc<watch::Sender<Option<TurboJson>>>,
-    package_hasher_tx: Arc<watch::Sender<Option<LocalPackageHashes>>>,
     cookie_tx: &CookieRegister,
     repo_root: &AbsoluteSystemPath,
 ) {
@@ -660,11 +667,17 @@ async fn update_package_hasher(
             let (root_turbo_json, package_graph) =
                 (root_turbo_json.unwrap(), package_graph.unwrap());
 
-            let task_definitions = create_task_definitions(
+            let task_definitions = match create_task_definitions(
                 repo_root.to_owned(),
                 root_turbo_json.clone(),
                 &*package_graph,
-            );
+            ) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::error!("unable to create task definitions: {e}");
+                    break;
+                }
+            };
 
             let package_hasher = LocalPackageHashes::new(
                 scm.clone(),
@@ -716,7 +729,7 @@ fn create_task_definitions(
     root_turbo_json: TurboJson,
 
     workspaces: &PackageGraph,
-) -> HashMap<TaskId<'static>, TaskDefinition> {
+) -> Result<HashMap<TaskId<'static>, TaskDefinition>, engine::BuilderError> {
     let mut task_definitions = TaskDefinitionBuilder::new(repo_root.clone(), workspaces, false);
 
     let mut turbo_jsons = [(PackageName::Root, root_turbo_json.clone())]
@@ -733,8 +746,8 @@ fn create_task_definitions(
         })
         .unique()
     {
-        task_definitions.add_task_definition_from(&mut turbo_jsons, &task_id);
+        task_definitions.add_task_definition_from(&mut turbo_jsons, &task_id)?;
     }
 
-    task_definitions.build()
+    Ok(task_definitions.build())
 }

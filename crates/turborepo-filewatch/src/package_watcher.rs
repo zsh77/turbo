@@ -185,6 +185,10 @@ impl PackageWatcher {
     pub fn watch(&self) -> CookiedOptionalWatch<HashMap<PackageName, WorkspaceData>, ()> {
         self.package_data.clone()
     }
+
+    pub fn watch_manager(&self) -> CookiedOptionalWatch<PackageManagerState, ()> {
+        self.manager_rx.clone()
+    }
 }
 
 /// The underlying task that listens to file system events and updates the
@@ -208,8 +212,8 @@ struct Subscriber<T: PackageDiscovery> {
 /// A collection of state inferred from a package manager. All this data will
 /// change if the package manager changes.
 #[derive(Clone)]
-struct PackageManagerState {
-    manager: PackageManager,
+pub struct PackageManagerState {
+    pub manager: PackageManager,
     // we need to wrap in Arc to make it send / sync
     filter: Arc<WorkspaceGlobs>,
     workspace_config_path: AbsoluteSystemPathBuf,
