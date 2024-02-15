@@ -24,7 +24,7 @@ use turborepo_filewatch::{
 use turborepo_repository::{
     change_mapper::{ChangeMapper, PackageChanges},
     discovery::{StaticPackageDiscovery, WorkspaceData},
-    package_graph::{self, PackageGraph, PackageName},
+    package_graph::{PackageGraph, PackageName},
     package_json::PackageJson,
 };
 use turborepo_scm::SCM;
@@ -336,7 +336,7 @@ impl Subscriber {
 #[tracing::instrument(skip_all)]
 async fn update_package_graph(
     repo_root: AbsoluteSystemPathBuf,
-    mut packages_rx: CookiedOptionalWatch<HashMap<WorkspaceName, WorkspaceData>, ()>,
+    mut packages_rx: CookiedOptionalWatch<HashMap<PackageName, WorkspaceData>, ()>,
     mut package_manager_rx: CookiedOptionalWatch<PackageManagerState, ()>,
     mut root_package_json_rx: OptionalWatch<PackageJson>,
     package_graph_tx: Arc<watch::Sender<Option<PackageGraph>>>,
@@ -685,8 +685,8 @@ async fn update_package_hasher(
             let package_hasher = LocalPackageHashes::new(
                 scm.clone(),
                 package_graph
-                    .workspaces()
-                    .map(|(k, v)| (k.to_owned(), v.package_json_path.to_owned()))
+                    .packages()
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .collect(),
                 task_definitions
                     .into_iter()
@@ -762,7 +762,7 @@ fn create_task_definitions(
         .collect();
 
     for task_id in workspaces
-        .workspaces()
+        .packages()
         .cartesian_product(root_turbo_json.pipeline.keys())
         .map(|((package, _), task)| {
             task.task_id()

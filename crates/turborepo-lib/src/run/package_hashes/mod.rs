@@ -4,7 +4,7 @@ pub mod watch;
 use std::{collections::HashMap, sync::Arc};
 
 use rayon::prelude::*;
-use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPath, AnchoredSystemPathBuf};
+use turbopath::{AbsoluteSystemPathBuf, AnchoredSystemPath};
 use turborepo_repository::{
     discovery::PackageDiscoveryBuilder,
     package_graph::{self, PackageGraph, PackageInfo, PackageName},

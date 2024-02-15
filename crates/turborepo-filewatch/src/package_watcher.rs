@@ -187,7 +187,7 @@ impl PackageWatcher {
     }
 
     pub fn watch_manager(&self) -> CookiedOptionalWatch<PackageManagerState, ()> {
-        self.manager_rx.clone()
+        self.package_manager_lazy.clone()
     }
 }
 

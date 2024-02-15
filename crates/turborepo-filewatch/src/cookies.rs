@@ -211,7 +211,10 @@ impl CookieWriter {
     ) -> Result<CookiedRequest<T>, CookieError> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let mut cookie_request_sender_lazy = self.cookie_request_sender_lazy.clone();
-        let cookie_request_sender_lazy = cookie_request_sender_lazy.get().await.map(|s| s.to_owned())?;
+        let cookie_request_sender_lazy = cookie_request_sender_lazy
+            .get()
+            .await
+            .map(|s| s.to_owned())?;
         cookie_request_sender_lazy.send(resp_tx).await?;
         let serial = match timeout {
             Some(timeout) => {
