@@ -11097,6 +11097,7 @@ dependencies = [
  "serde_qs",
  "sourcemap",
  "swc_core",
+ "swc_ecma_lints",
  "tokio",
  "tracing",
  "turbo-tasks",
