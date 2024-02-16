@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use indexmap::{indexmap, IndexMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -1526,7 +1526,7 @@ async fn resolve_internal_inline(
                         }
                         PatternMatch::Directory(matched_pattern, path) => {
                             results.push(
-                                resolve_into_folder(*path, options, *query)
+                                resolve_into_folder(*path, options)
                                     .with_request(matched_pattern.clone()),
                             );
                         }
@@ -1690,29 +1690,12 @@ async fn resolve_internal_inline(
 async fn resolve_into_folder(
     package_path: Vc<FileSystemPath>,
     options: Vc<ResolveOptions>,
-    query: Vc<String>,
 ) -> Result<Vc<ResolveResult>> {
     let package_json_path = package_path.join("package.json".to_string());
     let options_value = options.await?;
+
     for resolve_into_package in options_value.into_package.iter() {
         match resolve_into_package {
-            ResolveIntoPackage::Default(req) => {
-                let str = "./".to_string()
-                    + &*normalize_path(req).ok_or_else(|| {
-                        anyhow!(
-                            "ResolveIntoPackage::Default can't be used with a request that \
-                             escapes the current directory"
-                        )
-                    })?;
-                let request = Request::parse(Value::new(str.into()));
-                return Ok(resolve_internal_inline(
-                    package_path,
-                    request.resolve().await?,
-                    options,
-                )
-                .await?
-                .with_request(".".to_string()));
-            }
             ResolveIntoPackage::MainField {
                 field: name,
                 extensions,
@@ -1749,30 +1732,19 @@ async fn resolve_into_folder(
                     }
                 };
             }
-            ResolveIntoPackage::ExportsField {
-                conditions,
-                unspecified_conditions,
-            } => {
-                if let ExportsFieldResult::Some(exports_field) =
-                    &*exports_field(package_json_path).await?
-                {
-                    // other options do not apply anymore when an exports field exist
-                    return handle_exports_imports_field(
-                        package_path,
-                        package_json_path,
-                        options,
-                        exports_field,
-                        ".",
-                        conditions,
-                        unspecified_conditions,
-                        query,
-                    )
-                    .await;
-                }
-            }
+            ResolveIntoPackage::ExportsField { .. } => {}
         }
     }
-    Ok(ResolveResult::unresolveable().into())
+
+    // fall back to dir/index.[js,ts,...]
+    let str = "./index".to_string();
+    let request = Request::parse(Value::new(str.into()));
+
+    Ok(
+        resolve_internal_inline(package_path, request.resolve().await?, options)
+            .await?
+            .with_request(".".to_string()),
+    )
 }
 
 #[tracing::instrument(level = Level::TRACE, skip_all)]
@@ -1851,9 +1823,7 @@ async fn resolve_relative_request(
     // Directory matches must be resolved AFTER file matches
     for m in matches.iter() {
         if let PatternMatch::Directory(matched_pattern, path) = m {
-            results.push(
-                resolve_into_folder(*path, options, query).with_request(matched_pattern.clone()),
-            );
+            results.push(resolve_into_folder(*path, options).with_request(matched_pattern.clone()));
         }
     }
 
@@ -1991,17 +1961,13 @@ async fn resolve_into_package(
     let is_match = path.is_match("");
     let could_match_others = path.could_match_others("");
     if is_match {
-        results.push(resolve_into_folder(package_path, options, query));
+        results.push(resolve_into_folder(package_path, options));
     }
     if could_match_others {
         for resolve_into_package in options_value.into_package.iter() {
             match resolve_into_package {
-                ResolveIntoPackage::Default(_) | ResolveIntoPackage::MainField { .. } => {
-                    // doesn't affect packages with subpath
-                    if path.is_match("/") {
-                        results.push(resolve_into_folder(package_path, options, query));
-                    }
-                }
+                // handled by the `resolve_into_folder` call below
+                ResolveIntoPackage::MainField { .. } => {}
                 ResolveIntoPackage::ExportsField {
                     conditions,
                     unspecified_conditions,
@@ -2036,6 +2002,11 @@ async fn resolve_into_package(
                     break;
                 }
             }
+        }
+
+        // apply main field(s) or fallback to index.js if there's no subpath
+        if path.is_match("/") {
+            results.push(resolve_into_folder(package_path, options));
         }
 
         let mut new_pat = path.clone();
