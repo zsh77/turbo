@@ -1311,7 +1311,7 @@ mod tests {
         // it a valid glob, we must
         #[cfg(windows)]
         let slash_path = {
-            let regex = Regex::new("([A-Z]):").unwrap();
+            let regex = regex::Regex::new("([A-Z]):").unwrap();
             regex.replace(&slash_path, "$1\\:")
         };
 
