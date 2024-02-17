@@ -638,18 +638,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-macros"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bb524613be645939e280b7279f7b017f98cf7f5ef084ec374df373530e73277"
-dependencies = [
- "heck 0.4.1",
- "proc-macro2",
- "quote",
- "syn 2.0.32",
-]
-
-[[package]]
 name = "axum-server"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3360,13 +3348,10 @@ dependencies = [
 name = "globwatch"
 version = "0.1.0"
 dependencies = [
- "camino",
  "futures 0.3.28",
  "itertools 0.10.5",
  "merge-streams",
  "notify 5.1.0",
- "notify-debouncer-mini",
- "pin-project",
  "stop-token",
  "test-case",
  "thiserror",
@@ -3377,7 +3362,6 @@ dependencies = [
  "tracing-test",
  "turbopath",
  "unic-segment",
- "walkdir",
 ]
 
 [[package]]
@@ -4179,12 +4163,6 @@ dependencies = [
  "pest_derive",
  "serde",
 ]
-
-[[package]]
-name = "json_comments"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41ee439ee368ba4a77ac70d04f14015415af8600d6c894dc1f11bd79758c57d5"
 
 [[package]]
 name = "jsonc-parser"
@@ -5267,15 +5245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notify-debouncer-mini"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e23e9fa24f094b143c1eb61f90ac6457de87be6987bc70746e0179f7dbc9007b"
-dependencies = [
- "notify 5.1.0",
-]
-
-[[package]]
 name = "ntapi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6322,15 +6291,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qstring"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d464fae65fff2680baf48019211ce37aaec0c78e9264c84a3e484717f965104e"
-dependencies = [
- "percent-encoding 2.3.0",
-]
-
-[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6989,16 +6949,6 @@ checksum = "d31b7153270ebf48bf91c65ae5b0c00e749c4cfad505f66530ac74950249582f"
 dependencies = [
  "rustc_version 0.2.3",
  "semver 0.9.0",
-]
-
-[[package]]
-name = "rustc_version_runtime"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dd18cd2bae1820af0b6ad5e54f4a51d0f3fcc53b05f845675074efcc7af071d"
-dependencies = [
- "rustc_version 0.4.0",
- "semver 1.0.18",
 ]
 
 [[package]]
@@ -10189,20 +10139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-reflection"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67494bad4dda4c9bffae901dfe14e2b2c0f760adb4706dc10beeb81799f7f7b2"
-dependencies = [
- "bytes 1.5.0",
- "prost",
- "prost-types",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10273,7 +10209,6 @@ name = "tower-uds"
 version = "0.1.0"
 dependencies = [
  "async-io",
- "http",
  "tokio",
  "tokio-util",
  "tower",
@@ -10465,20 +10400,10 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "build-target",
- "clap 4.4.2",
- "clap_complete",
- "command-group",
- "dunce",
  "human-panic",
  "itertools 0.10.5",
  "miette 5.10.0",
  "pretty_assertions",
- "serde",
- "serde_json",
- "serde_yaml 0.9.27",
- "tiny-gradient",
- "tokio-util",
- "tracing",
  "turborepo-lib",
  "winapi 0.3.9",
 ]
@@ -10506,7 +10431,6 @@ dependencies = [
  "serde_json",
  "serde_regex",
  "serde_test",
- "stable_deref_trait",
  "thiserror",
  "tokio",
  "tracing",
@@ -10536,7 +10460,6 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_test",
- "tokio",
  "turbo-tasks",
  "turbo-tasks-build",
 ]
@@ -10560,7 +10483,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "httpmock",
- "indexmap 1.9.3",
  "lazy_static",
  "reqwest",
  "serde",
@@ -10625,7 +10547,6 @@ name = "turbo-tasks-macros"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "convert_case 0.6.0",
  "proc-macro-error",
  "proc-macro2",
  "quote",
@@ -10743,9 +10664,7 @@ dependencies = [
  "turbopack-core",
  "turbopack-css",
  "turbopack-ecmascript",
- "turbopack-ecmascript-plugins",
  "turbopack-env",
- "turbopack-image",
  "turbopack-json",
  "turbopack-mdx",
  "turbopack-node",
@@ -10759,12 +10678,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chromiumoxide",
- "clap 4.4.2",
- "console-subscriber",
  "criterion",
- "dunce",
  "futures 0.3.28",
- "mime 0.3.17",
  "nix 0.26.2",
  "once_cell",
  "owo-colors",
@@ -10772,7 +10687,6 @@ dependencies = [
  "portpicker",
  "rand 0.8.5",
  "regex",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -10781,7 +10695,6 @@ dependencies = [
  "turbo-tasks-testing",
  "turbopack-create-test-app",
  "url 2.4.1",
- "webbrowser",
 ]
 
 [[package]]
@@ -10846,9 +10759,6 @@ dependencies = [
  "indexmap 1.9.3",
  "indoc",
  "serde",
- "serde_json",
- "serde_qs",
- "sourcemap",
  "swc_core",
  "tracing",
  "turbo-tasks",
@@ -10856,7 +10766,6 @@ dependencies = [
  "turbo-tasks-fs",
  "turbo-tasks-hash",
  "turbopack-core",
- "turbopack-css",
  "turbopack-ecmascript",
  "turbopack-ecmascript-runtime",
  "urlencoding",
@@ -10873,13 +10782,10 @@ dependencies = [
  "dunce",
  "futures 0.3.28",
  "mime 0.3.17",
- "once_cell",
  "owo-colors",
  "regex",
  "serde",
- "serde_json",
  "tokio",
- "tracing",
  "tracing-signpost",
  "tracing-subscriber",
  "turbo-tasks",
@@ -10911,7 +10817,6 @@ dependencies = [
  "anyhow",
  "clap 4.4.2",
  "crossterm 0.26.1",
- "once_cell",
  "owo-colors",
  "serde",
  "turbo-tasks",
@@ -10925,15 +10830,9 @@ dependencies = [
 name = "turbopack-convert-trace"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap 4.4.2",
- "futures 0.3.28",
  "indexmap 1.9.3",
  "intervaltree",
- "itertools 0.10.5",
- "owo-colors",
  "postcard",
- "serde",
  "serde_json",
  "turbopack-trace-utils",
 ]
@@ -10952,13 +10851,11 @@ dependencies = [
  "lazy_static",
  "once_cell",
  "patricia_tree",
- "qstring",
  "ref-cast",
  "regex",
  "rstest",
  "serde",
  "serde_json",
- "serde_qs",
  "sourcemap",
  "swc_core",
  "tokio",
@@ -10989,12 +10886,10 @@ name = "turbopack-css"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "indexmap 1.9.3",
  "indoc",
  "lightningcss",
  "once_cell",
- "parcel_selectors",
  "parcel_sourcemap",
  "regex",
  "serde",
@@ -11021,7 +10916,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_qs",
- "swc_core",
  "tracing",
  "turbo-tasks",
  "turbo-tasks-build",
@@ -11029,7 +10923,6 @@ dependencies = [
  "turbo-tasks-hash",
  "turbopack",
  "turbopack-core",
- "turbopack-css",
  "turbopack-ecmascript",
  "turbopack-ecmascript-runtime",
  "urlencoding",
@@ -11048,7 +10941,6 @@ dependencies = [
  "indexmap 1.9.3",
  "mime 0.3.17",
  "mime_guess",
- "once_cell",
  "parking_lot 0.12.1",
  "pin-project-lite",
  "serde",
@@ -11079,7 +10971,6 @@ dependencies = [
  "async-trait",
  "criterion",
  "either",
- "futures 0.3.28",
  "indexmap 1.9.3",
  "indoc",
  "lazy_static",
@@ -11088,13 +10979,11 @@ dependencies = [
  "once_cell",
  "parking_lot 0.12.1",
  "petgraph",
- "pin-project-lite",
  "regex",
  "rstest",
  "rustc-hash",
  "serde",
  "serde_json",
- "serde_qs",
  "sourcemap",
  "swc_core",
  "tokio",
@@ -11129,7 +11018,6 @@ dependencies = [
  "indexmap 1.9.3",
  "lightningcss",
  "modularize_imports",
- "parcel_selectors",
  "serde",
  "serde_json",
  "styled_components",
@@ -11151,7 +11039,6 @@ dependencies = [
  "anyhow",
  "indoc",
  "serde",
- "swc_core",
  "turbo-tasks",
  "turbo-tasks-build",
  "turbo-tasks-fs",
@@ -11182,7 +11069,6 @@ dependencies = [
  "anyhow",
  "base64 0.21.4",
  "image",
- "indexmap 1.9.3",
  "mime 0.3.17",
  "once_cell",
  "regex",
@@ -11228,7 +11114,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
- "bytes 1.5.0",
  "const_format",
  "futures 0.3.28",
  "futures-retry",
@@ -11333,13 +11218,9 @@ name = "turbopack-trace-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap 4.4.2",
  "either",
- "futures 0.3.28",
  "indexmap 1.9.3",
- "intervaltree",
  "itertools 0.10.5",
- "owo-colors",
  "postcard",
  "serde",
  "serde_json",
@@ -11373,7 +11254,6 @@ dependencies = [
  "turbo-tasks",
  "turbo-tasks-build",
  "turbo-tasks-fs",
- "turbo-tasks-hash",
  "turbopack-core",
  "turbopack-ecmascript",
  "wasmparser 0.110.0",
@@ -11424,7 +11304,7 @@ dependencies = [
  "port_scanner",
  "regex",
  "reqwest",
- "rustc_version_runtime 0.2.1",
+ "rustc_version_runtime",
  "serde",
  "serde_json",
  "test-case",
@@ -11453,7 +11333,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -11472,14 +11351,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.21.4",
- "bytes 1.5.0",
  "camino",
- "chrono",
- "dunce",
  "futures 0.3.28",
- "hex",
  "hmac",
- "lazy_static",
  "libc",
  "os_str_bytes",
  "path-clean 1.0.1",
@@ -11498,7 +11372,6 @@ dependencies = [
  "turbopath",
  "turborepo-analytics",
  "turborepo-api-client",
- "turborepo-ui",
  "turborepo-vercel-api-mock",
  "zstd",
 ]
@@ -11524,7 +11397,6 @@ name = "turborepo-env"
 version = "0.1.0"
 dependencies = [
  "hex",
- "lazy_static",
  "regex",
  "serde",
  "sha2",
@@ -11547,9 +11419,7 @@ dependencies = [
 name = "turborepo-filewatch"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bitflags 1.3.2",
- "dashmap",
  "fsevent-sys",
  "futures 0.3.28",
  "itertools 0.10.5",
@@ -11600,9 +11470,6 @@ dependencies = [
  "async-io",
  "async-stream",
  "atty",
- "axum",
- "axum-server",
- "biome_console",
  "biome_deserialize",
  "biome_diagnostics",
  "biome_json_parser",
@@ -11628,19 +11495,13 @@ dependencies = [
  "globwatch",
  "go-parse-duration",
  "hex",
- "hostname",
  "humantime",
- "indicatif",
- "is-terminal",
  "itertools 0.10.5",
- "json_comments",
  "jsonc-parser 0.21.0",
- "lazy-regex",
  "lazy_static",
  "libc",
  "miette 5.10.0",
  "nix 0.26.2",
- "node-semver",
  "notify 5.1.0",
  "num_cpus",
  "owo-colors",
@@ -11656,7 +11517,6 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
- "rustc_version_runtime 0.2.1",
  "semver 1.0.18",
  "serde",
  "serde_json",
@@ -11678,7 +11538,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-build",
- "tonic-reflection",
  "tower",
  "tracing",
  "tracing-appender",
@@ -11707,7 +11566,6 @@ dependencies = [
  "turborepo-vercel-api-mock",
  "twox-hash",
  "uds_windows",
- "url 2.4.1",
  "wax",
  "webbrowser",
  "which",
@@ -11739,19 +11597,13 @@ name = "turborepo-lsp"
 version = "0.1.0"
 dependencies = [
  "crop",
- "futures 0.3.28",
  "itertools 0.10.5",
  "jsonc-parser 0.23.0",
  "pidlock",
  "serde_json",
  "tokio",
  "tokio-retry",
- "tokio-util",
- "tower",
  "tower-lsp",
- "tower-uds",
- "tracing",
- "tracing-subscriber",
  "turbopath",
  "turborepo-lib",
  "turborepo-repository",
@@ -11829,12 +11681,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "config",
- "dirs-next",
  "futures 0.3.28",
  "hex",
  "once_cell",
  "reqwest",
- "rustc_version_runtime 0.3.0",
  "serde",
  "serde_json",
  "sha2",
@@ -11865,7 +11715,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "turbopath",
- "turborepo-ci",
 ]
 
 [[package]]
@@ -11886,7 +11735,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "axum-macros",
  "axum-server",
  "futures-util",
  "port_scanner",
